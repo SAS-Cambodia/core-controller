@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "strictPropertyInitialization": false,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "declaration": false,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "target": "ES6",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true
+  }
+}

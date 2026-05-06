@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "rootDir": "./",
+    "baseUrl": "./example",
+    "outDir": "./dev-build",
+    "esModuleInterop": true,
+    "declaration": true
+  },
+  "include": ["example/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

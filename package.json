@@ -1,0 +1,44 @@
+{
+  "private": true,
+  "name": "@libs/core",
+  "version": "1.0.13",
+  "description": "Core library",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build:prod": "tsc --project tsconfig.prod.json",
+    "prepare": "npm run build:prod",
+    "dev": "concurrently \"npx tsc --watch --project tsconfig.dev.json\" \"nodemon\"",
+    "test": "ts-node test/simple-test.ts"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "^3.738.0",
+    "@aws-sdk/lib-storage": "^3.738.0",
+    "@types/aws-sdk": "^0.0.42",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.13.0",
+    "aws-sdk": "^2.1692.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "concurrently": "^9.1.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "firebase-admin": "^13.2.0",
+    "glob": "^11.0.1",
+    "multer": "^1.4.5-lts.1",
+    "nodemon": "^3.1.9",
+    "reflect-metadata": "^0.2.2",
+    "socket.io": "^4.8.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.3"
+  },
+  "dependencies": {
+    "eventemitter3": "^5.0.1"
+  }
+}
