@@ -1,6 +1,6 @@
 {
   "private": true,
-  "name": "@lib/core",
+  "name": "core-controller",
   "version": "1.0.13",
   "description": "Core library",
   "main": "dist/index.js",
