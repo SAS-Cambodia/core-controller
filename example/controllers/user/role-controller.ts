@@ -1,4 +1,4 @@
-import {Body, Res, Controller, Get, Post, Put, Req} from "../../../src";
+import {AccessControl, Body, Controller, Get, Post, Put, Req} from "../../../src";
 
 import { Service } from "../../app";
 import { Inject } from "../../../src";
@@ -27,12 +27,18 @@ export class RoleController {
 	
 	@Post()
 	create(@Body() body: UserDto) {
-		return this.service.create();
+		return this.service.create(body);
 	}
 	
 	@Put()
 	update(@Body() body: UserDto,@Req() res: any) {
 		return this.service.update(body);
+	}
+
+	@AccessControl('admin')
+	@Get('/admin-only')
+	adminOnly() {
+		return "admin content";
 	}
 }
 

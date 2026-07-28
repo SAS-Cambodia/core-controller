@@ -18,6 +18,8 @@ import {
 	Request,
 	Response
 } from "express";
+import { UserDto } from "./controllers/user/dto/user-dto";
+import { DemoAccessControlGuard } from "./guards/access-control-guard";
 
 @Injectable()
 class GlobalErrorInterceptor implements ErrorInterceptor {
@@ -46,7 +48,7 @@ class GlobalErrorInterceptor implements ErrorInterceptor {
 @Injectable()
 export class Service {
 	
-	create() {
+	create(body: UserDto) {
 		return "Service created";
 	}
 	
@@ -131,6 +133,7 @@ app.setBodyParserOptions({
 	}
 });
 app.useGlobalMiddleware(Middleware)
+app.useAccessControl(DemoAccessControlGuard);
 app.setGlobalPrefix('/api/v1');
 app.useGlobalInterceptors(
 	ResponseTransformerInterceptor,

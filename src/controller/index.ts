@@ -1,6 +1,7 @@
 import { HttpMethod } from "./util";
 export * from './decorator/controller';
 export * from './decorator/socket-controller';
+export * from './decorator/access-control';
 // decorator
 export * from './decorator/response';
 export * from './decorator/request';

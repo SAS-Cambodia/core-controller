@@ -116,18 +116,20 @@ export async function executeRoute(this: any, request: Request, response: Respon
 		// Handle @Body
 		if (reqBodyIndex !== undefined) {
 			const ResBodyType = Reflect.getMetadata(DECORATOR_KEY.REQUEST_BODY_TYPE, this.controllerInstance, this.methodName);
-			
+			const ResBodyTypeOptions = Reflect.getMetadata(DECORATOR_KEY.REQUEST_BODY_OPTIONS, this.controllerInstance, this.methodName);
+
 			if (ResBodyType) {
-				const instance = plainToInstance(ResBodyType, request.body);
+				const instance = plainToInstance(ResBodyType, request.body, ResBodyTypeOptions);
 				const errors = await validate(instance);
 				if (errors.length > 0) {
 					const error = new HttpError('Validation Error', 403, errors[0]);
 					error.stack = errors[0].toString();
 					return next(error);
 				}
+				args[reqBodyIndex] = instance;
+			} else {
+				args[reqBodyIndex] = request.body;
 			}
-			
-			args[reqBodyIndex] = request.body;
 		}
 		
 		const result = this.controllerInstance[this.methodName](...args);
@@ -137,7 +139,7 @@ export async function executeRoute(this: any, request: Request, response: Respon
 			result.then((data) => {
 				this.appContext.sendJsonResponse({
 					data,
-                    status: response.statusCode,
+					status: response.statusCode,
 					request,
 					response
 				});

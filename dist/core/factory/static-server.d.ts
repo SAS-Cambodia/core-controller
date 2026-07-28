@@ -2,6 +2,7 @@ import { Options, OptionsJson, OptionsUrlencoded, OptionsText } from 'body-parse
 import { CorsOptions, CorsOptionsDelegate } from "cors";
 import { serverOptions } from "./index";
 import { Options as RateOptions } from "express-rate-limit";
+import { AccessControlGuard } from "../../interface";
 import { ProviderTarget } from "../../type";
 export declare class CoreApplication {
     private options;
@@ -13,6 +14,7 @@ export declare class CoreApplication {
     private socketServer;
     private rateLimitOptions?;
     private middlewares;
+    private accessControlGuard?;
     private prefix?;
     private excludePrefix?;
     private readonly controllerClasses;
@@ -28,6 +30,18 @@ export declare class CoreApplication {
      * Each middleware should be a class that can be instantiated.
      */
     useGlobalMiddleware(...middlewares: any[]): void;
+    /**
+     * Registers the role-resolution guard used to enforce @AccessControl().
+     * The guard is instantiated directly (not resolved via the DI container),
+     * matching useGlobalMiddleware/useGlobalInterceptors — @Inject() still works
+     * on guard properties regardless, since it resolves lazily via a getter.
+     *
+     * Must be called before start(), since @AccessControl-guarded routes/events
+     * are validated against this guard during controller registration.
+     *
+     * @param guard - A class implementing AccessControlGuard.
+     */
+    useAccessControl(guard: new (...args: any[]) => AccessControlGuard): void;
     /**
      * Retrieves an instance of the given provider target from the container.
      *

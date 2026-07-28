@@ -21,3 +21,12 @@ export interface SocketEventAdapter {
     onDisconnect(socket: Socket, reason: DisconnectReason): void;
     setBusinessId?(): Promise<string>;
 }
+export interface AccessControlContext {
+    request?: Request;
+    response?: Response;
+    socket?: Socket;
+    data?: any;
+}
+export interface AccessControlGuard {
+    resolveRoles(context: AccessControlContext): string[] | Promise<string[]>;
+}

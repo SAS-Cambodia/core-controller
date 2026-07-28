@@ -118,16 +118,20 @@ function executeRoute(request, response, next) {
             // Handle @Body
             if (reqBodyIndex !== undefined) {
                 const ResBodyType = Reflect.getMetadata(decorator_key_1.DECORATOR_KEY.REQUEST_BODY_TYPE, this.controllerInstance, this.methodName);
+                const ResBodyTypeOptions = Reflect.getMetadata(decorator_key_1.DECORATOR_KEY.REQUEST_BODY_OPTIONS, this.controllerInstance, this.methodName);
                 if (ResBodyType) {
-                    const instance = (0, class_transformer_1.plainToInstance)(ResBodyType, request.body);
+                    const instance = (0, class_transformer_1.plainToInstance)(ResBodyType, request.body, ResBodyTypeOptions);
                     const errors = yield (0, class_validator_1.validate)(instance);
                     if (errors.length > 0) {
                         const error = new http_error_exception_1.HttpError('Validation Error', 403, errors[0]);
                         error.stack = errors[0].toString();
                         return next(error);
                     }
+                    args[reqBodyIndex] = instance;
                 }
-                args[reqBodyIndex] = request.body;
+                else {
+                    args[reqBodyIndex] = request.body;
+                }
             }
             const result = this.controllerInstance[this.methodName](...args);
             // check method is promise

@@ -35,7 +35,7 @@ import { plainToInstance } from "class-transformer";
 import { Options as RateOptions } from "express-rate-limit";
 import { validate } from "class-validator";
 import { HttpError } from "../../http-error-exception";
-import { CoreMiddleware, ErrorInterceptor, Interceptor } from "../../interface";
+import { AccessControlGuard, CoreMiddleware, ErrorInterceptor, Interceptor } from "../../interface";
 import {ProviderTarget, SocketCallBack} from "../../type";
 import { HttpStatusCode } from "../../enums/http-code";
 import { container } from "../../di";
@@ -58,6 +58,7 @@ export class CoreApplication {
 	private socketServer: ServerSK;
 	private rateLimitOptions?: Partial<RateOptions>;
 	private middlewares: CoreMiddleware[] = [];
+	private accessControlGuard?: AccessControlGuard;
 	private prefix?: string;
 	private excludePrefix?: string[] = [];
 	private readonly controllerClasses: Function[];
@@ -98,6 +99,21 @@ export class CoreApplication {
 		});
 	}
 	
+	/**
+	 * Registers the role-resolution guard used to enforce @AccessControl().
+	 * The guard is instantiated directly (not resolved via the DI container),
+	 * matching useGlobalMiddleware/useGlobalInterceptors — @Inject() still works
+	 * on guard properties regardless, since it resolves lazily via a getter.
+	 *
+	 * Must be called before start(), since @AccessControl-guarded routes/events
+	 * are validated against this guard during controller registration.
+	 *
+	 * @param guard - A class implementing AccessControlGuard.
+	 */
+	public useAccessControl(guard: new (...args: any[]) => AccessControlGuard) {
+		this.accessControlGuard = new guard();
+	}
+
 	/**
 	 * Retrieves an instance of the given provider target from the container.
 	 *
@@ -264,6 +280,31 @@ export class CoreApplication {
 									break;
 							}
 						}
+
+						const methodRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
+						const classRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, ControllerClass);
+						const accessControlRoles: string[] | undefined = methodRoles !== undefined ? methodRoles : classRoles;
+
+						if (accessControlRoles !== undefined) {
+							if (!this.accessControlGuard) {
+								throw new Error(`[AccessControl] ${ControllerClass.name}.${methodName} requires @AccessControl but no guard was registered. Call app.useAccessControl(YourGuard) before app.start().`);
+							}
+							args.push(async (request: Request, response: Response, next: NextFunction) => {
+								try {
+									const resolvedRoles = await this.accessControlGuard!.resolveRoles({ request, response });
+									const allowed = accessControlRoles.length === 0
+										? resolvedRoles.length > 0
+										: resolvedRoles.some((role) => accessControlRoles.includes(role));
+									if (!allowed) {
+										return next(new HttpError('Forbidden', HttpStatusCode.FORBIDDEN));
+									}
+									next();
+								} catch (e) {
+									next(e);
+								}
+							});
+						}
+
 						args.push(executeRoute.bind({
 							controllerInstance,
 							methodName,
@@ -319,6 +360,15 @@ export class CoreApplication {
 				const orderNamespace = this.socketServer.of(socketRoom);
 				if (this.options.socketMiddleware) orderNamespace.use(this.options.socketMiddleware);
 				if (subscribers) {
+					const subscribersPrototype = Object.getPrototypeOf(subscribers.instance);
+					subscribers.methods.forEach((methodName) => {
+						const methodRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, subscribersPrototype, methodName);
+						const classRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
+						const accessControlRoles: string[] | undefined = methodRoles !== undefined ? methodRoles : classRoles;
+						if (accessControlRoles !== undefined && !this.accessControlGuard) {
+							throw new Error(`[AccessControl] Socket event "${methodName}" requires @AccessControl but no guard was registered. Call app.useAccessControl(YourGuard) before app.start().`);
+						}
+					});
 					orderNamespace.on('connection', (socket: Socket) => {
 						subscribers.instance['onConnect'](socket);
 						socket.on('disconnect', (reason) => subscribers.instance['onDisconnect'](socket, reason));
@@ -330,9 +380,21 @@ export class CoreApplication {
 							const dataIndex = Reflect.getMetadata(DECORATOR_KEY.SOCKET_DATA, controllerInstance, methodName);
 							const keyDataIndex = Reflect.getMetadata(DECORATOR_KEY.SOCKET_DATA_KEY, controllerInstance, methodName);
 							const event = Reflect.getMetadata(DECORATOR_KEY.ROUTE_PATH, prototype, methodName);
+							const methodRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
+							const classRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
+							const accessControlRoles: string[] | undefined = methodRoles !== undefined ? methodRoles : classRoles;
 							const args: any[] = [];
 							socket.on(event, async <T>(data: T, callback: SocketCallBack) => {
 								try {
+									if (accessControlRoles !== undefined) {
+										const resolvedRoles = await this.accessControlGuard!.resolveRoles({ socket, data });
+										const allowed = accessControlRoles.length === 0
+											? resolvedRoles.length > 0
+											: resolvedRoles.some((role) => accessControlRoles.includes(role));
+										if (!allowed) {
+											return callback ? callback(new HttpError('Forbidden', HttpStatusCode.FORBIDDEN)) : undefined;
+										}
+									}
 									if (socketIndex !== undefined) args[socketIndex] = orderNamespace;
 									if (callBackIndex !== undefined && callback) args[callBackIndex] = callback;
 									if (dataIndex !== undefined) args[dataIndex] = keyDataIndex ? socket.data[keyDataIndex] : data;
@@ -347,8 +409,10 @@ export class CoreApplication {
 												error.stack = JSON.stringify(errors[0]);
 												return callback(error);
 											}
+											args[bodyIndex] = instance;
+										} else {
+											args[bodyIndex] = data;
 										}
-										args[bodyIndex] = data;
 									}
 									await subscribers.instance[methodName](...args);
 								} catch (e) {
@@ -455,7 +519,7 @@ export class CoreApplication {
 				});
 				
 				if(data !== undefined) {
-					response.status(response.statusCode).json(data);
+					response.status(error?.statusCode || response.statusCode || HttpStatusCode.INTERNAL_SERVER_ERROR).json(data);
 				}
 			});
 		})

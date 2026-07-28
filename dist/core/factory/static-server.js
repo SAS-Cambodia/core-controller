@@ -91,6 +91,20 @@ class CoreApplication {
         });
     }
     /**
+     * Registers the role-resolution guard used to enforce @AccessControl().
+     * The guard is instantiated directly (not resolved via the DI container),
+     * matching useGlobalMiddleware/useGlobalInterceptors — @Inject() still works
+     * on guard properties regardless, since it resolves lazily via a getter.
+     *
+     * Must be called before start(), since @AccessControl-guarded routes/events
+     * are validated against this guard during controller registration.
+     *
+     * @param guard - A class implementing AccessControlGuard.
+     */
+    useAccessControl(guard) {
+        this.accessControlGuard = new guard();
+    }
+    /**
      * Retrieves an instance of the given provider target from the container.
      *
      * @param {ProviderTarget<T>} target - The provider target or token used to resolve the instance.
@@ -239,6 +253,29 @@ class CoreApplication {
                                         break;
                                 }
                             }
+                            const methodRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
+                            const classRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, ControllerClass);
+                            const accessControlRoles = methodRoles !== undefined ? methodRoles : classRoles;
+                            if (accessControlRoles !== undefined) {
+                                if (!this.accessControlGuard) {
+                                    throw new Error(`[AccessControl] ${ControllerClass.name}.${methodName} requires @AccessControl but no guard was registered. Call app.useAccessControl(YourGuard) before app.start().`);
+                                }
+                                args.push((request, response, next) => __awaiter(this, void 0, void 0, function* () {
+                                    try {
+                                        const resolvedRoles = yield this.accessControlGuard.resolveRoles({ request, response });
+                                        const allowed = accessControlRoles.length === 0
+                                            ? resolvedRoles.length > 0
+                                            : resolvedRoles.some((role) => accessControlRoles.includes(role));
+                                        if (!allowed) {
+                                            return next(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN));
+                                        }
+                                        next();
+                                    }
+                                    catch (e) {
+                                        next(e);
+                                    }
+                                }));
+                            }
                             args.push(controller_1.executeRoute.bind({
                                 controllerInstance,
                                 methodName,
@@ -293,6 +330,15 @@ class CoreApplication {
                     if (this.options.socketMiddleware)
                         orderNamespace.use(this.options.socketMiddleware);
                     if (subscribers) {
+                        const subscribersPrototype = Object.getPrototypeOf(subscribers.instance);
+                        subscribers.methods.forEach((methodName) => {
+                            const methodRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, subscribersPrototype, methodName);
+                            const classRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
+                            const accessControlRoles = methodRoles !== undefined ? methodRoles : classRoles;
+                            if (accessControlRoles !== undefined && !this.accessControlGuard) {
+                                throw new Error(`[AccessControl] Socket event "${methodName}" requires @AccessControl but no guard was registered. Call app.useAccessControl(YourGuard) before app.start().`);
+                            }
+                        });
                         orderNamespace.on('connection', (socket) => {
                             subscribers.instance['onConnect'](socket);
                             socket.on('disconnect', (reason) => subscribers.instance['onDisconnect'](socket, reason));
@@ -304,9 +350,21 @@ class CoreApplication {
                                 const dataIndex = Reflect.getMetadata(controller_1.DECORATOR_KEY.SOCKET_DATA, controllerInstance, methodName);
                                 const keyDataIndex = Reflect.getMetadata(controller_1.DECORATOR_KEY.SOCKET_DATA_KEY, controllerInstance, methodName);
                                 const event = Reflect.getMetadata(controller_1.DECORATOR_KEY.ROUTE_PATH, prototype, methodName);
+                                const methodRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
+                                const classRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
+                                const accessControlRoles = methodRoles !== undefined ? methodRoles : classRoles;
                                 const args = [];
                                 socket.on(event, (data, callback) => __awaiter(this, void 0, void 0, function* () {
                                     try {
+                                        if (accessControlRoles !== undefined) {
+                                            const resolvedRoles = yield this.accessControlGuard.resolveRoles({ socket, data });
+                                            const allowed = accessControlRoles.length === 0
+                                                ? resolvedRoles.length > 0
+                                                : resolvedRoles.some((role) => accessControlRoles.includes(role));
+                                            if (!allowed) {
+                                                return callback ? callback(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN)) : undefined;
+                                            }
+                                        }
                                         if (socketIndex !== undefined)
                                             args[socketIndex] = orderNamespace;
                                         if (callBackIndex !== undefined && callback)
@@ -324,8 +382,11 @@ class CoreApplication {
                                                     error.stack = JSON.stringify(errors[0]);
                                                     return callback(error);
                                                 }
+                                                args[bodyIndex] = instance;
                                             }
-                                            args[bodyIndex] = data;
+                                            else {
+                                                args[bodyIndex] = data;
+                                            }
                                         }
                                         yield subscribers.instance[methodName](...args);
                                     }
@@ -415,7 +476,7 @@ class CoreApplication {
                     next
                 });
                 if (data !== undefined) {
-                    response.status(response.statusCode).json(data);
+                    response.status((error === null || error === void 0 ? void 0 : error.statusCode) || response.statusCode || http_code_1.HttpStatusCode.INTERNAL_SERVER_ERROR).json(data);
                 }
             });
         });
