@@ -1,4 +1,4 @@
-import {AccessControl, Body, Controller, Cookies, Get, Headers, HttpError, Ip, Post, Put, Query, Req, UseGuards} from "../../../src";
+import {AccessControl, Body, Controller, Cookies, Get, Headers, HttpError, Ip, Post, Put, Query, Req, UseGuards,BadRequestError} from "../../../src";
 
 import { Service } from "../../app";
 import { Inject } from "../../../src";
@@ -40,6 +40,7 @@ export class RoleController {
 	@AccessControl('admin')
 	@Get('/admin-only')
 	adminOnly() {
+		throw new BadRequestError("dd")
 		return "admin content";
 	}
 

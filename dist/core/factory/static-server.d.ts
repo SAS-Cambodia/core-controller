@@ -13,7 +13,8 @@ export declare class CoreApplication {
     private notFoundHandler?;
     private socketServer;
     private rateLimitOptions?;
-    private defaultErrorStatusCode;
+    private defaultErrorStatusCode?;
+    private requestLoggingEnabled;
     private middlewares;
     private accessControlGuard?;
     private prefix?;
@@ -57,6 +58,12 @@ export declare class CoreApplication {
      * @return {void} This method does not return a value.
      */
     enableCors(options: CorsOptions | CorsOptionsDelegate): void;
+    /**
+     * Enables logging of incoming requests — one line per request, printed when
+     * the response finishes, showing method, path, status code, and duration.
+     * Intended for development use.
+     */
+    enableRequestLogging(): void;
     /**
      * Sets a global prefix for all routes in the application.
      * This prefix will be prepended to all controller paths unless specified in the exclude list.
@@ -164,6 +171,7 @@ export declare class CoreApplication {
      * @param statusCode - The default HTTP status code for such error responses.
      */
     setDefaultErrorStatusCode(statusCode: number): void;
+    private applyRequestLogging;
     private applyCors;
     private applyRateLimit;
     private executeMiddleware;

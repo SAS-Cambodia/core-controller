@@ -39,7 +39,7 @@ Decorators don't execute logic themselves — they call `Reflect.defineMetadata(
 ### Startup / request flow (`CoreApplication`, `static-server.ts`)
 
 `ServerFactory.createServer(options)` just constructs `CoreApplication`. Controllers may be passed as classes or as glob path strings (resolved via `importClassesFromDirectories` in `controller/util/index.ts`, using `glob` + `require`). `start(port, callback)`, in order:
-1. Applies CORS and rate-limit middleware if configured.
+1. Applies request logging (`enableRequestLogging()`, dev-oriented — logs method/path/status/duration per request on response finish), then CORS and rate-limit middleware if configured.
 2. Registers user middleware (`useGlobalMiddleware`) and response interceptors (`useGlobalInterceptors`).
 3. `registerController()` — for each controller class: resolves constructor deps from the DI container, reads `CONTROLLER_PATH`/`CONTROLLER` metadata to distinguish plain HTTP controllers (`@Controller`) from socket controllers (`@SocketController`), and for each method reads `METHOD`/`ROUTE_PATH` metadata to either register an Express route (binding `executeRoute` as the handler, with `multer` middleware inserted first if `@FileUpload` metadata is present) or a Socket.IO event (`@SocketEvent`). Socket controllers get their own namespace (optionally suffixed by a business ID from `setBusinessId()` on the `SocketEventAdapter`), and per-event handlers marshal args from `@SocketInstance`/`@SocketCallback`/`@SocketData`/`@SocketBody` metadata, validating `@SocketBody` payloads with `class-validator`/`class-transformer` the same way HTTP bodies are.
 4. Registers the not-found handler (`useNotFoundHandler`, if set) and error interceptors (`catch()`), then starts the underlying `http.Server`.

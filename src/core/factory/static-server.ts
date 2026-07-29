@@ -57,7 +57,8 @@ export class CoreApplication {
 	private notFoundHandler?: NotFoundHandler;
 	private socketServer: ServerSK;
 	private rateLimitOptions?: Partial<RateOptions>;
-	private defaultErrorStatusCode: number = HttpStatusCode.INTERNAL_SERVER_ERROR;
+	private defaultErrorStatusCode?: number;
+	private requestLoggingEnabled = false;
 	private middlewares: CoreMiddleware[] = [];
 	private accessControlGuard?: AccessControlGuard;
 	private prefix?: string;
@@ -134,7 +135,16 @@ export class CoreApplication {
 	public enableCors(options: CorsOptions | CorsOptionsDelegate): void {
 		this.corsOptions = options;
 	}
-	
+
+	/**
+	 * Enables logging of incoming requests — one line per request, printed when
+	 * the response finishes, showing method, path, status code, and duration.
+	 * Intended for development use.
+	 */
+	public enableRequestLogging(): void {
+		this.requestLoggingEnabled = true;
+	}
+
 	/**
 	 * Sets a global prefix for all routes in the application.
 	 * This prefix will be prepended to all controller paths unless specified in the exclude list.
@@ -603,6 +613,18 @@ export class CoreApplication {
 		this.defaultErrorStatusCode = statusCode;
 	}
 
+	private applyRequestLogging(): void {
+		if (!this.requestLoggingEnabled) return;
+		this.server.use((request: Request, response: Response, next: NextFunction) => {
+			const startTime = Date.now();
+			response.on('finish', () => {
+				const duration = Date.now() - startTime;
+				console.log(`[${new Date().toISOString()}] ${request.method} ${request.originalUrl} ${response.statusCode} ${duration}ms Body: ${JSON.stringify(request.body)}`);
+			});
+			next();
+		});
+	}
+
 	private applyCors(): void {
 		const cors = require("cors");
 		this.server.use(cors(this.corsOptions));
@@ -670,9 +692,7 @@ export class CoreApplication {
 
 				if(data !== undefined) {
 					const useErrorStatusCode = error?.statusCode !== undefined && !error?.bodyOnly;
-					const statusCode = useErrorStatusCode
-						? error.statusCode
-						: (response.statusCode || this.defaultErrorStatusCode);
+					const statusCode = this.defaultErrorStatusCode ? this.defaultErrorStatusCode : useErrorStatusCode ? error.statusCode : response.statusCode;
 					response.status(statusCode).json(data);
 				}
 			});
@@ -681,6 +701,7 @@ export class CoreApplication {
 
 	public async start(port: number | string, callback: () => void) {
 		this.appContext.start();
+		this.applyRequestLogging();
 		this.applyCors();
 		this.applyRateLimit();
 		this.executeMiddleware();
