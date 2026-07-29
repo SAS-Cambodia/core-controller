@@ -60,9 +60,9 @@ class CoreApplication {
     constructor(options) {
         this.options = options;
         this.corsOptions = {};
-        this.interceptorsBefore = [];
-        this.interceptorsAfter = [];
+        this.interceptors = [];
         this.interceptorError = [];
+        this.defaultErrorStatusCode = http_code_1.HttpStatusCode.INTERNAL_SERVER_ERROR;
         this.middlewares = [];
         this.excludePrefix = [];
         const { SocketIO, socketOptions, providers, controllers } = this.options;
@@ -134,17 +134,17 @@ class CoreApplication {
         this.excludePrefix = excludePrefix;
     }
     /**
-     * Registers global interceptors for the application.
-     * This method allows adding interceptors that will be applied globally to all routes.
-     * It supports both regular interceptors (before and after) and error interceptors.
+     * Registers global interceptors for the application: response interceptors
+     * (classes implementing `Interceptor`, tagged with `@ResponseInterceptor()`,
+     * chained in registration order to shape a matched route's response body)
+     * and error interceptors (classes implementing `ErrorInterceptor`, detected
+     * structurally via their `catch()` method — no decorator needed).
      *
      * @param interceptors - An array of interceptor classes to be instantiated and used globally.
      *                       Each interceptor should be a class that can be instantiated.
      *
-     * @remarks
-     * The method uses reflection to determine if an interceptor should be executed before or after
-     * the main request handling, or if it's an error interceptor. It then adds the interceptor
-     * to the appropriate internal array (interceptorsBefore, interceptorsAfter, or interceptorError).
+     * @throws if a class implements `intercept()` but has no `@ResponseInterceptor()`
+     * applied — it would otherwise silently never run.
      *
      * @example
      * ```
@@ -153,18 +153,28 @@ class CoreApplication {
      */
     useGlobalInterceptors(...interceptors) {
         interceptors.forEach((instance) => {
-            const after = Reflect.getMetadata(controller_1.DECORATOR_KEY.AFTER_INTERCEPTOR, instance);
-            const before = Reflect.getMetadata(controller_1.DECORATOR_KEY.BEFORE_INTERCEPTOR, instance);
-            const interceptClass = new instance();
-            if ((0, controller_1.isInterceptor)(interceptClass)) {
-                if (after)
-                    this.interceptorsAfter.push(interceptClass);
-                if (before)
-                    this.interceptorsBefore.push(interceptClass);
+            const interceptorInstance = new instance();
+            if ((0, controller_1.isInterceptor)(interceptorInstance)) {
+                const isResponseInterceptor = Reflect.getMetadata(controller_1.DECORATOR_KEY.RESPONSE_INTERCEPTOR, instance);
+                if (!isResponseInterceptor) {
+                    throw new Error(`[Interceptor] ${instance.name} implements intercept() but has no @ResponseInterceptor() applied — it will never run.`);
+                }
+                this.interceptors.push(interceptorInstance);
             }
-            if ((0, controller_1.isInterceptorError)(interceptClass))
-                this.interceptorError.push(interceptClass);
+            if ((0, controller_1.isInterceptorError)(interceptorInstance))
+                this.interceptorError.push(interceptorInstance);
         });
+    }
+    /**
+     * Registers the fallback handler invoked when no route matches. Unlike
+     * useGlobalInterceptors this isn't a spreadable list — the mounted middleware
+     * is terminal (doesn't call next()), so only one handler can ever meaningfully
+     * fire; the API reflects that by taking a single class.
+     *
+     * @param handler - A class implementing NotFoundHandler.
+     */
+    useNotFoundHandler(handler) {
+        this.notFoundHandler = new handler();
     }
     /**
      * Resolves the effective @AccessControl role list for a method, falling back
@@ -517,9 +527,36 @@ class CoreApplication {
     setRateLimit(options) {
         this.rateLimitOptions = options;
     }
-    executeInterceptorBefore() {
-        if (this.interceptorsBefore.length > 0) {
-            this.interceptorsBefore.forEach((interceptor) => {
+    /**
+     * Sets the HTTP status code used when a caught error shouldn't dictate the
+     * wire status itself — either because it has no `statusCode` at all, or it
+     * was thrown as `new HttpError(message, code, details, { bodyOnly: true })`,
+     * meaning `code` is a business/error code meant for the response body, not
+     * the actual HTTP status. Defaults to 500 until configured.
+     *
+     * @param statusCode - The default HTTP status code for such error responses.
+     */
+    setDefaultErrorStatusCode(statusCode) {
+        this.defaultErrorStatusCode = statusCode;
+    }
+    applyCors() {
+        const cors = require("cors");
+        this.server.use(cors(this.corsOptions));
+    }
+    applyRateLimit() {
+        if (!this.rateLimitOptions)
+            return;
+        const rateLimit = require("express-rate-limit");
+        this.server.use(rateLimit(this.rateLimitOptions));
+    }
+    executeMiddleware() {
+        this.middlewares.forEach(middleware => {
+            this.server.use(middleware.use);
+        });
+    }
+    registerResponseInterceptors() {
+        if (this.interceptors.length > 0) {
+            this.interceptors.forEach((interceptor) => {
                 this.server.use((request, response, next) => {
                     this.appContext.onEmitInterceptor({
                         method: request.method,
@@ -534,9 +571,14 @@ class CoreApplication {
             });
         }
     }
-    executeMiddleware() {
-        this.middlewares.forEach(middleware => {
-            this.server.use(middleware.use);
+    applyNotFoundHandler() {
+        if (!this.notFoundHandler)
+            return;
+        this.server.use((request, response) => {
+            const data = this.notFoundHandler.handle({ response, request });
+            if (data !== undefined) {
+                response.status(http_code_1.HttpStatusCode.NOT_FOUND).json(data);
+            }
         });
     }
     catch() {
@@ -549,35 +591,24 @@ class CoreApplication {
                     next
                 });
                 if (data !== undefined) {
-                    response.status((error === null || error === void 0 ? void 0 : error.statusCode) || response.statusCode || http_code_1.HttpStatusCode.INTERNAL_SERVER_ERROR).json(data);
-                }
-            });
-        });
-    }
-    executeInterceptorAfter() {
-        this.interceptorsAfter.forEach(interceptor => {
-            this.server.use((request, response) => {
-                const data = interceptor.intercept({ response, request });
-                if (data !== undefined) {
-                    response.status(200).json(data);
+                    const useErrorStatusCode = (error === null || error === void 0 ? void 0 : error.statusCode) !== undefined && !(error === null || error === void 0 ? void 0 : error.bodyOnly);
+                    const statusCode = useErrorStatusCode
+                        ? error.statusCode
+                        : (response.statusCode || this.defaultErrorStatusCode);
+                    response.status(statusCode).json(data);
                 }
             });
         });
     }
     start(port, callback) {
         return __awaiter(this, void 0, void 0, function* () {
-            // Event listeners
             this.appContext.start();
-            const cors = require("cors");
-            const rateLimit = require("express-rate-limit");
-            if (cors)
-                this.server.use(cors(this.corsOptions));
-            if (rateLimit && this.rateLimitOptions)
-                this.server.use(rateLimit(this.rateLimitOptions));
+            this.applyCors();
+            this.applyRateLimit();
             this.executeMiddleware();
-            this.executeInterceptorBefore();
+            this.registerResponseInterceptors();
             yield this.registerController(this.controllerClasses, this.providers);
-            this.executeInterceptorAfter();
+            this.applyNotFoundHandler();
             this.catch();
             this.httpServer.listen(port, callback);
         });

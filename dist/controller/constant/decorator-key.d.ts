@@ -15,8 +15,7 @@ declare const DECORATOR_KEY: {
     readonly QUERY: symbol;
     readonly MIDDLEWARE: symbol;
     readonly INTERCEPTOR: symbol;
-    readonly BEFORE_INTERCEPTOR: symbol;
-    readonly AFTER_INTERCEPTOR: symbol;
+    readonly RESPONSE_INTERCEPTOR: symbol;
     readonly FILE_UPLOAD: symbol;
     readonly SOCKET_INSTANCE: symbol;
     readonly SOCKET_CALLBACK: symbol;

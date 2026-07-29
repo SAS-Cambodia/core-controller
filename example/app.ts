@@ -6,6 +6,8 @@ import {
 	ErrorInterceptor,
 	Injectable,
 	Interceptor,
+	NotFoundHandler,
+	ResponseInterceptor,
 	ServerFactory,
 	CoreMiddleware
 } from "../src";
@@ -34,6 +36,7 @@ class GlobalErrorInterceptor implements ErrorInterceptor {
 			.filter((line: any) => !line.includes('node_modules')) // Remove node_modules paths
 			.join('\n')
 			: '';
+		
 		return {
 			status,
 			message: error.message || 'Internal Server Error',
@@ -58,9 +61,8 @@ export class Service {
 	
 }
 
-@Injectable({type: 'AFTER'})
-export class NotFoundInterceptor implements Interceptor {
-	intercept(context: Action) {
+export class NotFoundInterceptor implements NotFoundHandler {
+	handle(context: Context) {
 		return {
 			message: 'Route Not Found',
 			method: context.request.method,
@@ -71,7 +73,7 @@ export class NotFoundInterceptor implements Interceptor {
 	}
 }
 
-@Injectable()
+@ResponseInterceptor()
 export class ResponseTransformerInterceptor implements Interceptor {
 	intercept(context: Context, data: any) {
 		const before = Date.now();
@@ -133,11 +135,14 @@ app.setBodyParserOptions({
 app.useGlobalMiddleware(Middleware)
 app.useAccessControl(DemoAccessControlGuard);
 app.setGlobalPrefix('/api/v1');
+// Business-code errors thrown with `bodyOnly: true` (see RoleController.insufficientBalance)
+// respond with this HTTP status; the real code stays in the body.
+app.setDefaultErrorStatusCode(200);
 app.useGlobalInterceptors(
 	ResponseTransformerInterceptor,
-	GlobalErrorInterceptor,
-	NotFoundInterceptor
+	GlobalErrorInterceptor
 );
+app.useNotFoundHandler(NotFoundInterceptor);
 
 const PORT = 3100;
 app.start(PORT, () => {

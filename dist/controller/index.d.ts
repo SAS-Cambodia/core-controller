@@ -17,6 +17,7 @@ export * from './decorator/use-guards';
 export * from './decorator/headers';
 export * from './decorator/cookies';
 export * from './decorator/ip';
+export * from './decorator/response-interceptor';
 export declare const Get: (path?: string) => MethodDecorator;
 export declare const Post: (path?: string) => MethodDecorator;
 export declare const Put: (path?: string) => MethodDecorator;

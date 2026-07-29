@@ -19,6 +19,7 @@ export * from './decorator/use-guards';
 export * from './decorator/headers';
 export * from './decorator/cookies';
 export * from './decorator/ip';
+export * from './decorator/response-interceptor';
 
 export const Get = (path?: string) => HttpMethod('get', path);
 export const Post = (path?: string) => HttpMethod('post', path);

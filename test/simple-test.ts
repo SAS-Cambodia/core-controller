@@ -9,9 +9,12 @@ import {
   Cookies,
   DECORATOR_KEY,
   Headers,
+  HttpError,
   Ip,
   Param,
   Query,
+  ResponseInterceptor,
+  ServerFactory,
   SocketQuery,
   UseGuards
 } from '../src';
@@ -182,6 +185,57 @@ function testParamValidationMetadata() {
   console.log('✓ Test passed: Param DTO validation metadata');
 }
 
+function testResponseInterceptorDecoratorMetadata() {
+  console.log('Running test: ResponseInterceptor decorator metadata');
+  @ResponseInterceptor()
+  class SampleInterceptor {}
+  const isResponseInterceptor = Reflect.getMetadata(DECORATOR_KEY.RESPONSE_INTERCEPTOR, SampleInterceptor);
+
+  assert.strictEqual(isResponseInterceptor, true, 'ResponseInterceptor should mark the class with RESPONSE_INTERCEPTOR metadata');
+  console.log('✓ Test passed: ResponseInterceptor decorator metadata');
+}
+
+function testUseGlobalInterceptorsThrowsWithoutDecorator() {
+  console.log('Running test: useGlobalInterceptors throws for undecorated interceptor');
+  class UndecoratedInterceptor {
+    intercept() { return {}; }
+  }
+  const app = ServerFactory.createServer({ controllers: [] });
+
+  assert.throws(
+    () => app.useGlobalInterceptors(UndecoratedInterceptor),
+    /has no @ResponseInterceptor\(\) applied/,
+    'useGlobalInterceptors should throw when a class implements intercept() without @ResponseInterceptor()'
+  );
+  console.log('✓ Test passed: useGlobalInterceptors throws for undecorated interceptor');
+}
+
+function testUseGlobalInterceptorsAcceptsDecorated() {
+  console.log('Running test: useGlobalInterceptors accepts decorated interceptor');
+  @ResponseInterceptor()
+  class DecoratedInterceptor {
+    intercept(_: any, data: any) { return data; }
+  }
+  const app = ServerFactory.createServer({ controllers: [] });
+
+  assert.doesNotThrow(
+    () => app.useGlobalInterceptors(DecoratedInterceptor),
+    'useGlobalInterceptors should accept a class with @ResponseInterceptor() applied'
+  );
+  console.log('✓ Test passed: useGlobalInterceptors accepts decorated interceptor');
+}
+
+function testHttpErrorBodyOnly() {
+  console.log('Running test: HttpError bodyOnly flag');
+  const defaultError = new HttpError('Not found', 404);
+  const bodyOnlyError = new HttpError('Insufficient balance', 40001, { reason: 'low balance' }, { bodyOnly: true });
+
+  assert.strictEqual(defaultError.bodyOnly, false, 'bodyOnly should default to false when omitted');
+  assert.strictEqual(bodyOnlyError.bodyOnly, true, 'bodyOnly should be true when passed { bodyOnly: true }');
+  assert.strictEqual(bodyOnlyError.statusCode, 40001, 'statusCode should still be stored as-is for the interceptor to read');
+  console.log('✓ Test passed: HttpError bodyOnly flag');
+}
+
 function testAppContextInterceptorNotSharedAcrossConcurrentRequests() {
   console.log('Running test: AppContext interceptor isolation across concurrent requests');
   const ctx = new AppContext();
@@ -278,6 +332,10 @@ testUseGuardsClassMetadata();
 testUseGuardsStacking();
 testQueryValidationMetadata();
 testParamValidationMetadata();
+testResponseInterceptorDecoratorMetadata();
+testUseGlobalInterceptorsThrowsWithoutDecorator();
+testUseGlobalInterceptorsAcceptsDecorated();
+testHttpErrorBodyOnly();
 testAppContextInterceptorNotSharedAcrossConcurrentRequests();
 testAppContextInterceptorChaining();
 testAppContextClearsInterceptorAfterResponse();

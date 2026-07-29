@@ -13,6 +13,9 @@ export interface Interceptor {
 export interface ErrorInterceptor {
     catch(context: Action): object;
 }
+export interface NotFoundHandler {
+    handle(context: Context): object;
+}
 export interface CoreMiddleware {
     use(req: Request, res: Response, next: NextFunction): void;
 }

@@ -167,15 +167,14 @@ function executeRoute(request, response, next) {
                 args[reqIndex] = request;
             }
             if (reqFilesIndex) {
-                args[reqFilesIndex.parameterIndex] = reqFilesIndex.options.type === 'single' ? request.file : request.files;
-                // switch (reqFilesIndex.options.type) {
-                // 	case 'single':
-                // 		args[reqFilesIndex.parameterIndex] = request.file;
-                // 		break;
-                // 	default:
-                // 		args[reqFilesIndex.parameterIndex] = request.files;
-                // 		break;
-                // }
+                switch (reqFilesIndex.options.type) {
+                    case 'single':
+                        args[reqFilesIndex.parameterIndex] = request.file;
+                        break;
+                    default:
+                        args[reqFilesIndex.parameterIndex] = request.files;
+                        break;
+                }
             }
             // Handle @Body
             if (reqBodyIndex !== undefined) {

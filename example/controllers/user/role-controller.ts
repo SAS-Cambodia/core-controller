@@ -1,4 +1,4 @@
-import {AccessControl, Body, Controller, Cookies, Get, Headers, Ip, Post, Put, Query, Req, UseGuards} from "../../../src";
+import {AccessControl, Body, Controller, Cookies, Get, Headers, HttpError, Ip, Post, Put, Query, Req, UseGuards} from "../../../src";
 
 import { Service } from "../../app";
 import { Inject } from "../../../src";
@@ -63,6 +63,14 @@ export class RoleController {
 	@Get('/list')
 	list(@Query() query: ListQueryDto) {
 		return { search: query.search, sort: query.sort };
+	}
+
+	// bodyOnly: the 40001 business code lands in the response body (via
+	// GlobalErrorInterceptor's returned data), while the actual HTTP status
+	// is whatever app.setDefaultErrorStatusCode() was configured to.
+	@Get('/insufficient-balance')
+	insufficientBalance() {
+		throw new HttpError('Insufficient balance', 40001, { reason: 'low balance' }, { bodyOnly: true });
 	}
 }
 

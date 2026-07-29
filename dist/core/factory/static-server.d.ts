@@ -2,17 +2,18 @@ import { Options, OptionsJson, OptionsUrlencoded, OptionsText } from 'body-parse
 import { CorsOptions, CorsOptionsDelegate } from "cors";
 import { serverOptions } from "./index";
 import { Options as RateOptions } from "express-rate-limit";
-import { AccessControlGuard } from "../../interface";
+import { AccessControlGuard, NotFoundHandler } from "../../interface";
 import { ProviderTarget } from "../../type";
 export declare class CoreApplication {
     private options;
     server: import("express-serve-static-core").Express;
     private corsOptions;
-    private interceptorsBefore;
-    private interceptorsAfter;
+    private interceptors;
     private interceptorError;
+    private notFoundHandler?;
     private socketServer;
     private rateLimitOptions?;
+    private defaultErrorStatusCode;
     private middlewares;
     private accessControlGuard?;
     private prefix?;
@@ -65,17 +66,17 @@ export declare class CoreApplication {
      */
     setGlobalPrefix(prefix: string, excludePrefix?: string[]): void;
     /**
-     * Registers global interceptors for the application.
-     * This method allows adding interceptors that will be applied globally to all routes.
-     * It supports both regular interceptors (before and after) and error interceptors.
+     * Registers global interceptors for the application: response interceptors
+     * (classes implementing `Interceptor`, tagged with `@ResponseInterceptor()`,
+     * chained in registration order to shape a matched route's response body)
+     * and error interceptors (classes implementing `ErrorInterceptor`, detected
+     * structurally via their `catch()` method — no decorator needed).
      *
      * @param interceptors - An array of interceptor classes to be instantiated and used globally.
      *                       Each interceptor should be a class that can be instantiated.
      *
-     * @remarks
-     * The method uses reflection to determine if an interceptor should be executed before or after
-     * the main request handling, or if it's an error interceptor. It then adds the interceptor
-     * to the appropriate internal array (interceptorsBefore, interceptorsAfter, or interceptorError).
+     * @throws if a class implements `intercept()` but has no `@ResponseInterceptor()`
+     * applied — it would otherwise silently never run.
      *
      * @example
      * ```
@@ -83,6 +84,15 @@ export declare class CoreApplication {
      * ```
      */
     useGlobalInterceptors(...interceptors: any[]): void;
+    /**
+     * Registers the fallback handler invoked when no route matches. Unlike
+     * useGlobalInterceptors this isn't a spreadable list — the mounted middleware
+     * is terminal (doesn't call next()), so only one handler can ever meaningfully
+     * fire; the API reflects that by taking a single class.
+     *
+     * @param handler - A class implementing NotFoundHandler.
+     */
+    useNotFoundHandler(handler: new (...args: any[]) => NotFoundHandler): void;
     /**
      * Resolves the effective @AccessControl role list for a method, falling back
      * to the class-level roles when the method itself isn't annotated.
@@ -144,9 +154,21 @@ export declare class CoreApplication {
      * @return {void} This method does not return a value.
      */
     setRateLimit(options: Partial<RateOptions>): void;
-    private executeInterceptorBefore;
+    /**
+     * Sets the HTTP status code used when a caught error shouldn't dictate the
+     * wire status itself — either because it has no `statusCode` at all, or it
+     * was thrown as `new HttpError(message, code, details, { bodyOnly: true })`,
+     * meaning `code` is a business/error code meant for the response body, not
+     * the actual HTTP status. Defaults to 500 until configured.
+     *
+     * @param statusCode - The default HTTP status code for such error responses.
+     */
+    setDefaultErrorStatusCode(statusCode: number): void;
+    private applyCors;
+    private applyRateLimit;
     private executeMiddleware;
+    private registerResponseInterceptors;
+    private applyNotFoundHandler;
     private catch;
-    private executeInterceptorAfter;
     start(port: number | string, callback: () => void): Promise<void>;
 }

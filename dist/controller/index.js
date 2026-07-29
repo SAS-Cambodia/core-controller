@@ -36,6 +36,7 @@ __exportStar(require("./decorator/use-guards"), exports);
 __exportStar(require("./decorator/headers"), exports);
 __exportStar(require("./decorator/cookies"), exports);
 __exportStar(require("./decorator/ip"), exports);
+__exportStar(require("./decorator/response-interceptor"), exports);
 const Get = (path) => (0, util_1.HttpMethod)('get', path);
 exports.Get = Get;
 const Post = (path) => (0, util_1.HttpMethod)('post', path);

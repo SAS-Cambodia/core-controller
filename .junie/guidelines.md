@@ -159,13 +159,17 @@ app.useGlobalMiddleware(Middleware)
 
 ### Interceptors
 
-Interceptors can be added globally:
+Response interceptors (classes implementing `Interceptor`, marked with `@ResponseInterceptor()`) and error interceptors (classes implementing `ErrorInterceptor`, detected automatically via their `catch()` method) are registered together:
 ```typescript
 app.useGlobalInterceptors(
     ResponseTransformerInterceptor,
-    GlobalErrorInterceptor,
-    NotFoundInterceptor
+    GlobalErrorInterceptor
 );
+```
+
+Multiple `@ResponseInterceptor()` classes chain in registration order. The not-found fallback is a separate, single-purpose registration:
+```typescript
+app.useNotFoundHandler(NotFoundInterceptor);
 ```
 
 ### Error Handling
