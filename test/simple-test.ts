@@ -236,6 +236,17 @@ function testHttpErrorBodyOnly() {
   console.log('✓ Test passed: HttpError bodyOnly flag');
 }
 
+function testEnableRequestLoggingDoesNotThrow() {
+  console.log('Running test: enableRequestLogging does not throw');
+  const app = ServerFactory.createServer({ controllers: [] });
+
+  assert.doesNotThrow(
+    () => app.enableRequestLogging(),
+    'enableRequestLogging should be callable without throwing'
+  );
+  console.log('✓ Test passed: enableRequestLogging does not throw');
+}
+
 function testAppContextInterceptorNotSharedAcrossConcurrentRequests() {
   console.log('Running test: AppContext interceptor isolation across concurrent requests');
   const ctx = new AppContext();
@@ -336,6 +347,7 @@ testResponseInterceptorDecoratorMetadata();
 testUseGlobalInterceptorsThrowsWithoutDecorator();
 testUseGlobalInterceptorsAcceptsDecorated();
 testHttpErrorBodyOnly();
+testEnableRequestLoggingDoesNotThrow();
 testAppContextInterceptorNotSharedAcrossConcurrentRequests();
 testAppContextInterceptorChaining();
 testAppContextClearsInterceptorAfterResponse();

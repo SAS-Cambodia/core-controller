@@ -62,7 +62,7 @@ class CoreApplication {
         this.corsOptions = {};
         this.interceptors = [];
         this.interceptorError = [];
-        this.defaultErrorStatusCode = http_code_1.HttpStatusCode.INTERNAL_SERVER_ERROR;
+        this.requestLoggingEnabled = false;
         this.middlewares = [];
         this.excludePrefix = [];
         const { SocketIO, socketOptions, providers, controllers } = this.options;
@@ -121,6 +121,14 @@ class CoreApplication {
      */
     enableCors(options) {
         this.corsOptions = options;
+    }
+    /**
+     * Enables logging of incoming requests — one line per request, printed when
+     * the response finishes, showing method, path, status code, and duration.
+     * Intended for development use.
+     */
+    enableRequestLogging() {
+        this.requestLoggingEnabled = true;
     }
     /**
      * Sets a global prefix for all routes in the application.
@@ -539,6 +547,18 @@ class CoreApplication {
     setDefaultErrorStatusCode(statusCode) {
         this.defaultErrorStatusCode = statusCode;
     }
+    applyRequestLogging() {
+        if (!this.requestLoggingEnabled)
+            return;
+        this.server.use((request, response, next) => {
+            const startTime = Date.now();
+            response.on('finish', () => {
+                const duration = Date.now() - startTime;
+                console.log(`[${new Date().toISOString()}] ${request.method} ${request.originalUrl} ${response.statusCode} ${duration}ms Body: ${JSON.stringify(request.body)}`);
+            });
+            next();
+        });
+    }
     applyCors() {
         const cors = require("cors");
         this.server.use(cors(this.corsOptions));
@@ -592,9 +612,7 @@ class CoreApplication {
                 });
                 if (data !== undefined) {
                     const useErrorStatusCode = (error === null || error === void 0 ? void 0 : error.statusCode) !== undefined && !(error === null || error === void 0 ? void 0 : error.bodyOnly);
-                    const statusCode = useErrorStatusCode
-                        ? error.statusCode
-                        : (response.statusCode || this.defaultErrorStatusCode);
+                    const statusCode = this.defaultErrorStatusCode ? this.defaultErrorStatusCode : useErrorStatusCode ? error.statusCode : response.statusCode;
                     response.status(statusCode).json(data);
                 }
             });
@@ -603,6 +621,7 @@ class CoreApplication {
     start(port, callback) {
         return __awaiter(this, void 0, void 0, function* () {
             this.appContext.start();
+            this.applyRequestLogging();
             this.applyCors();
             this.applyRateLimit();
             this.executeMiddleware();

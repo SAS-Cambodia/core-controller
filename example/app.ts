@@ -9,7 +9,7 @@ import {
 	NotFoundHandler,
 	ResponseInterceptor,
 	ServerFactory,
-	CoreMiddleware
+	CoreMiddleware, HttpStatusCode
 } from "../src";
 import dotenv from "dotenv";
 
@@ -120,6 +120,8 @@ app.enableCors({
 	origin: '*'
 });
 
+app.enableRequestLogging();
+
 app.setRateLimit({
 	windowMs: 15 * 60 * 1000, // 15 minutes
 	limit: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes).
@@ -137,7 +139,7 @@ app.useAccessControl(DemoAccessControlGuard);
 app.setGlobalPrefix('/api/v1');
 // Business-code errors thrown with `bodyOnly: true` (see RoleController.insufficientBalance)
 // respond with this HTTP status; the real code stays in the body.
-app.setDefaultErrorStatusCode(200);
+app.setDefaultErrorStatusCode(HttpStatusCode.OK);
 app.useGlobalInterceptors(
 	ResponseTransformerInterceptor,
 	GlobalErrorInterceptor
