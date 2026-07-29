@@ -18,6 +18,10 @@ export interface ErrorInterceptor {
 	catch(context: Action): object;
 }
 
+export interface NotFoundHandler {
+	handle(context: Context): object;
+}
+
 export interface CoreMiddleware {
     use(req: Request, res: Response, next: NextFunction): void;
 }
@@ -37,4 +41,8 @@ export interface AccessControlContext {
 
 export interface AccessControlGuard {
 	resolveRoles(context: AccessControlContext): string[] | Promise<string[]>;
+}
+
+export interface CanActivate {
+	canActivate(context: AccessControlContext): boolean | Promise<boolean>;
 }

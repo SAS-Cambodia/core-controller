@@ -159,13 +159,21 @@ app.useGlobalMiddleware(Middleware)
 
 ### Interceptors
 
-Interceptors can be added globally:
+Response interceptors (classes implementing `Interceptor`, marked with `@ResponseInterceptor()`) and error interceptors (classes implementing `ErrorInterceptor`, detected automatically via their `catch()` method) are registered together:
 ```typescript
 app.useGlobalInterceptors(
     ResponseTransformerInterceptor,
-    GlobalErrorInterceptor,
-    NotFoundInterceptor
+    GlobalErrorInterceptor
 );
+```
+
+Multiple `@ResponseInterceptor()` classes chain in registration order, each receiving the previous one's output. Registering a class that implements `intercept()` without `@ResponseInterceptor()` throws immediately — it would otherwise silently never run.
+
+### Not Found Handling
+
+The fallback invoked when no route matches is a separate, single-purpose registration (unlike interceptors, only one can ever meaningfully fire, so it isn't a spreadable list):
+```typescript
+app.useNotFoundHandler(NotFoundInterceptor);
 ```
 
 ### Error Handling
@@ -193,6 +201,8 @@ import {
 	ErrorInterceptor,
 	Injectable,
 	Interceptor,
+	NotFoundHandler,
+	ResponseInterceptor,
 	ServerFactory,
 	CoreMiddleware
 } from "@libs/core";
@@ -243,10 +253,9 @@ export class Service {
 
 }
 
-@Injectable({type: 'AFTER'})
-export class NotFoundInterceptor implements Interceptor {
+export class NotFoundInterceptor implements NotFoundHandler {
 
-	intercept(context: Action) {
+	handle(context: Context) {
 		return {
 			message: 'Route Not Found',
 			method: context.request.method,
@@ -257,7 +266,7 @@ export class NotFoundInterceptor implements Interceptor {
 	}
 }
 
-@Injectable()
+@ResponseInterceptor()
 export class ResponseTransformerInterceptor implements Interceptor {
 
 	intercept(context: Context, data: any) {
@@ -320,9 +329,9 @@ app.useGlobalMiddleware(Middleware)
 app.setGlobalPrefix('/api/v1');
 app.useGlobalInterceptors(
 	ResponseTransformerInterceptor,
-	GlobalErrorInterceptor,
-	NotFoundInterceptor
+	GlobalErrorInterceptor
 );
+app.useNotFoundHandler(NotFoundInterceptor);
 
 const PORT = 3100;
 app.start(PORT, () => {

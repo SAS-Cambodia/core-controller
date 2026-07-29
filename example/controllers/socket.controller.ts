@@ -5,7 +5,8 @@ import {
 	SocketBody,
 	SocketResponse,
 	SocketCallBack,
-	SocketData
+	SocketData,
+	SocketQuery
 } from "../../src";
 import { Socket } from "socket.io";
 import { UserDto } from "./user/dto/user-dto";
@@ -33,6 +34,18 @@ export class UserSocketController implements SocketEventAdapter {
 	    res({
 			status: 200,
 		    data,
+	    })
+    }
+
+    // Reads socket.handshake.query, e.g. connected with `?token=...`
+    @SocketEvent('whoami')
+    whoami(
+		@SocketQuery('token') token: string,
+		@SocketResponse() res: SocketCallBack
+    ) {
+	    res({
+		    status: 200,
+		    token,
 	    })
     }
 
