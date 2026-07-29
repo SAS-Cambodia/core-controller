@@ -18,6 +18,7 @@ exports.prepareController = prepareController;
 exports.isInterceptor = isInterceptor;
 exports.isInterceptorError = isInterceptorError;
 exports.isMiddleware = isMiddleware;
+exports.parseCookies = parseCookies;
 exports.executeRoute = executeRoute;
 const path_1 = __importDefault(require("path"));
 const decorator_key_1 = require("../constant/decorator-key");
@@ -78,6 +79,24 @@ function isInterceptorError(obj) {
 function isMiddleware(obj) {
     return typeof obj.use === 'function';
 }
+/**
+ * Parses a raw `Cookie` header string into a key/value map.
+ */
+function parseCookies(header) {
+    const cookies = {};
+    if (!header)
+        return cookies;
+    header.split(';').forEach((pair) => {
+        const index = pair.indexOf('=');
+        if (index === -1)
+            return;
+        const key = pair.slice(0, index).trim();
+        const value = pair.slice(index + 1).trim();
+        if (key)
+            cookies[key] = decodeURIComponent(value);
+    });
+    return cookies;
+}
 function executeRoute(request, response, next) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
@@ -88,15 +107,57 @@ function executeRoute(request, response, next) {
             const reqIndex = Reflect.getMetadata(decorator_key_1.DECORATOR_KEY.REQUEST, this.controllerInstance, this.methodName);
             const reqBodyIndex = Reflect.getMetadata(decorator_key_1.DECORATOR_KEY.REQUEST_BODY, this.controllerInstance, this.methodName);
             const reqFilesIndex = Reflect.getMetadata(decorator_key_1.DECORATOR_KEY.FILE_UPLOAD, this.controllerInstance, this.methodName);
+            const headersMeta = Reflect.getMetadata(decorator_key_1.DECORATOR_KEY.HEADERS, this.controllerInstance, this.methodName) || [];
+            const cookiesMeta = Reflect.getMetadata(decorator_key_1.DECORATOR_KEY.COOKIES, this.controllerInstance, this.methodName) || [];
+            const ipIndex = Reflect.getMetadata(decorator_key_1.DECORATOR_KEY.IP, this.controllerInstance, this.methodName);
             const args = [];
             // Handle @Param
-            paramsMeta.forEach(({ param, parameterIndex }) => {
-                args[parameterIndex] = param ? request.params[param] : request.params;
-            });
+            for (const { param, parameterIndex, type, options } of paramsMeta) {
+                if (!param && type) {
+                    const instance = (0, class_transformer_1.plainToInstance)(type, request.params, options);
+                    const errors = yield (0, class_validator_1.validate)(instance);
+                    if (errors.length > 0) {
+                        const error = new http_error_exception_1.HttpError('Validation Error', 403, errors[0]);
+                        error.stack = errors[0].toString();
+                        return next(error);
+                    }
+                    args[parameterIndex] = instance;
+                }
+                else {
+                    args[parameterIndex] = param ? request.params[param] : request.params;
+                }
+            }
             // Handle @Query
-            queryMeta.forEach(({ queryKey, queryIndex }) => {
-                args[queryIndex] = queryKey ? request.query[queryKey] : request.query;
+            for (const { queryKey, queryIndex, type, options } of queryMeta) {
+                if (!queryKey && type) {
+                    const instance = (0, class_transformer_1.plainToInstance)(type, request.query, options);
+                    const errors = yield (0, class_validator_1.validate)(instance);
+                    if (errors.length > 0) {
+                        const error = new http_error_exception_1.HttpError('Validation Error', 403, errors[0]);
+                        error.stack = errors[0].toString();
+                        return next(error);
+                    }
+                    args[queryIndex] = instance;
+                }
+                else {
+                    args[queryIndex] = queryKey ? request.query[queryKey] : request.query;
+                }
+            }
+            // Handle @Headers
+            headersMeta.forEach(({ headerKey, headerIndex }) => {
+                args[headerIndex] = headerKey ? request.headers[headerKey.toLowerCase()] : request.headers;
             });
+            // Handle @Cookies
+            if (cookiesMeta.length > 0) {
+                const cookies = parseCookies(request.headers.cookie);
+                cookiesMeta.forEach(({ cookieKey, cookieIndex }) => {
+                    args[cookieIndex] = cookieKey ? cookies[cookieKey] : cookies;
+                });
+            }
+            // Handle @Ip
+            if (ipIndex !== undefined) {
+                args[ipIndex] = request.ip;
+            }
             // Handle @Res
             if (resIndex !== undefined) {
                 args[resIndex] = response;
@@ -106,14 +167,15 @@ function executeRoute(request, response, next) {
                 args[reqIndex] = request;
             }
             if (reqFilesIndex) {
-                switch (reqFilesIndex.options.type) {
-                    case 'single':
-                        args[reqFilesIndex.parameterIndex] = request.file;
-                        break;
-                    default:
-                        args[reqFilesIndex.parameterIndex] = request.files;
-                        break;
-                }
+                args[reqFilesIndex.parameterIndex] = reqFilesIndex.options.type === 'single' ? request.file : request.files;
+                // switch (reqFilesIndex.options.type) {
+                // 	case 'single':
+                // 		args[reqFilesIndex.parameterIndex] = request.file;
+                // 		break;
+                // 	default:
+                // 		args[reqFilesIndex.parameterIndex] = request.files;
+                // 		break;
+                // }
             }
             // Handle @Body
             if (reqBodyIndex !== undefined) {
@@ -139,7 +201,6 @@ function executeRoute(request, response, next) {
                 result.then((data) => {
                     this.appContext.sendJsonResponse({
                         data,
-                        status: response.statusCode,
                         request,
                         response
                     });
@@ -148,7 +209,6 @@ function executeRoute(request, response, next) {
             else if (result !== undefined) {
                 this.appContext.sendJsonResponse({
                     data: result,
-                    status: response.statusCode,
                     request,
                     response
                 });

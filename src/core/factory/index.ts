@@ -122,5 +122,4 @@ export interface SendJsonResponse {
 	data: any,
 	request: Request;
 	response: Response;
-	startTime: Date,
 }

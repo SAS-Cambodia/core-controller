@@ -10,5 +10,9 @@ export declare function prepareController(controllers: Function[] | string[]): F
 export declare function isInterceptor(obj: Interceptor): obj is Interceptor;
 export declare function isInterceptorError(obj: ErrorInterceptor): obj is ErrorInterceptor;
 export declare function isMiddleware(obj: CoreMiddleware): obj is CoreMiddleware;
+/**
+ * Parses a raw `Cookie` header string into a key/value map.
+ */
+export declare function parseCookies(header?: string): Record<string, string>;
 export declare function executeRoute(this: any, request: Request, response: Response, next: NextFunction): Promise<void>;
 export {};

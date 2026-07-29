@@ -30,3 +30,6 @@ export interface AccessControlContext {
 export interface AccessControlGuard {
     resolveRoles(context: AccessControlContext): string[] | Promise<string[]>;
 }
+export interface CanActivate {
+    canActivate(context: AccessControlContext): boolean | Promise<boolean>;
+}

@@ -24,5 +24,10 @@ declare const DECORATOR_KEY: {
     readonly SOCKET_BODY: symbol;
     readonly SOCKET_DATA_KEY: symbol;
     readonly ACCESS_CONTROL: symbol;
+    readonly GUARDS: symbol;
+    readonly HEADERS: symbol;
+    readonly COOKIES: symbol;
+    readonly IP: symbol;
+    readonly SOCKET_QUERY: symbol;
 };
 export { DECORATOR_KEY };

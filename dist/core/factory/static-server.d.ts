@@ -83,6 +83,36 @@ export declare class CoreApplication {
      * ```
      */
     useGlobalInterceptors(...interceptors: any[]): void;
+    /**
+     * Resolves the effective @AccessControl role list for a method, falling back
+     * to the class-level roles when the method itself isn't annotated.
+     */
+    private resolveAccessControlRoles;
+    private isRoleAllowed;
+    /**
+     * Returns the registered AccessControlGuard or throws, since guarded routes/events
+     * are only valid once useAccessControl() has been called.
+     */
+    private requireAccessControlGuard;
+    private buildHttpAccessControlMiddleware;
+    /**
+     * Collects @UseGuards() guards from class + method level (both run, unlike
+     * @AccessControl's method-overrides-class semantics) and instantiates them.
+     */
+    private resolveGuards;
+    private runGuards;
+    private buildFileUploadMiddleware;
+    private registerHttpRoute;
+    /**
+     * Marshals args (@SocketInstance/@SocketCallback/@SocketData/@SocketBody), enforces
+     * @AccessControl, validates @SocketBody, and binds a single socket event listener.
+     */
+    private bindSocketEvent;
+    /**
+     * Resolves (or creates) the socket namespace for basePath, registers @AccessControl
+     * pre-checks, and binds connection/event listeners for its subscribers.
+     */
+    private registerSocketNamespace;
     private registerController;
     private instantiateController;
     /**

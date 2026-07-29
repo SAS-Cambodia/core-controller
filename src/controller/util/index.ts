@@ -1,10 +1,10 @@
 import path from 'path';
-import { DECORATOR_KEY } from "../constant/decorator-key";
-import { CoreMiddleware, ErrorInterceptor, Interceptor } from "../../interface";
-import { NextFunction, Request, Response } from "express";
-import { plainToInstance } from "class-transformer";
-import { validate } from "class-validator";
-import { HttpError } from "../../http-error-exception";
+import {DECORATOR_KEY} from "../constant/decorator-key";
+import {CoreMiddleware, ErrorInterceptor, Interceptor} from "../../interface";
+import {NextFunction, Request, Response} from "express";
+import {plainToInstance} from "class-transformer";
+import {validate} from "class-validator";
+import {HttpError} from "../../http-error-exception";
 
 type HttpMethod = 'get' | 'post' | 'put' | 'delete' | 'patch' | 'event';
 
@@ -70,6 +70,22 @@ export function isMiddleware(obj: CoreMiddleware): obj is CoreMiddleware {
 	return typeof obj.use === 'function';
 }
 
+/**
+ * Parses a raw `Cookie` header string into a key/value map.
+ */
+export function parseCookies(header?: string): Record<string, string> {
+	const cookies: Record<string, string> = {};
+	if (!header) return cookies;
+	header.split(';').forEach((pair) => {
+		const index = pair.indexOf('=');
+		if (index === -1) return;
+		const key = pair.slice(0, index).trim();
+		const value = pair.slice(index + 1).trim();
+		if (key) cookies[key] = decodeURIComponent(value);
+	});
+	return cookies;
+}
+
 export async function executeRoute(this: any, request: Request, response: Response, next: NextFunction) {
 	try {
 		
@@ -80,18 +96,61 @@ export async function executeRoute(this: any, request: Request, response: Respon
 		const reqIndex = Reflect.getMetadata(DECORATOR_KEY.REQUEST, this.controllerInstance, this.methodName);
 		const reqBodyIndex = Reflect.getMetadata(DECORATOR_KEY.REQUEST_BODY, this.controllerInstance, this.methodName);
 		const reqFilesIndex = Reflect.getMetadata(DECORATOR_KEY.FILE_UPLOAD, this.controllerInstance, this.methodName);
+		const headersMeta = Reflect.getMetadata(DECORATOR_KEY.HEADERS, this.controllerInstance, this.methodName) || [];
+		const cookiesMeta = Reflect.getMetadata(DECORATOR_KEY.COOKIES, this.controllerInstance, this.methodName) || [];
+		const ipIndex = Reflect.getMetadata(DECORATOR_KEY.IP, this.controllerInstance, this.methodName);
 		const args: any[] = [];
-		
+
 		// Handle @Param
-		paramsMeta.forEach(({param, parameterIndex}: { param: string, parameterIndex: number }) => {
-			args[parameterIndex] = param ? request.params[param] : request.params;
-		});
-		
+		for (const {param, parameterIndex, type, options} of paramsMeta as { param?: string, parameterIndex: number, type?: new (...args: any[]) => object, options?: any }[]) {
+			if (!param && type) {
+				const instance = plainToInstance(type, request.params, options);
+				const errors = await validate(instance);
+				if (errors.length > 0) {
+					const error = new HttpError('Validation Error', 403, errors[0]);
+					error.stack = errors[0].toString();
+					return next(error);
+				}
+				args[parameterIndex] = instance;
+			} else {
+				args[parameterIndex] = param ? request.params[param] : request.params;
+			}
+		}
+
 		// Handle @Query
-		queryMeta.forEach(({queryKey, queryIndex}: { queryKey: string, queryIndex: number }) => {
-			args[queryIndex] = queryKey ? request.query[queryKey] : request.query;
+		for (const {queryKey, queryIndex, type, options} of queryMeta as { queryKey?: string, queryIndex: number, type?: new (...args: any[]) => object, options?: any }[]) {
+			if (!queryKey && type) {
+				const instance = plainToInstance(type, request.query, options);
+				const errors = await validate(instance);
+				if (errors.length > 0) {
+					const error = new HttpError('Validation Error', 403, errors[0]);
+					error.stack = errors[0].toString();
+					return next(error);
+				}
+				args[queryIndex] = instance;
+			} else {
+				args[queryIndex] = queryKey ? request.query[queryKey] : request.query;
+			}
+		}
+
+		// Handle @Headers
+		headersMeta.forEach(({headerKey, headerIndex}: { headerKey?: string, headerIndex: number }) => {
+			args[headerIndex] = headerKey ? request.headers[headerKey.toLowerCase()] : request.headers;
 		});
-		
+
+		// Handle @Cookies
+		if (cookiesMeta.length > 0) {
+			const cookies = parseCookies(request.headers.cookie);
+			cookiesMeta.forEach(({cookieKey, cookieIndex}: { cookieKey?: string, cookieIndex: number }) => {
+				args[cookieIndex] = cookieKey ? cookies[cookieKey] : cookies;
+			});
+		}
+
+		// Handle @Ip
+		if (ipIndex !== undefined) {
+			args[ipIndex] = request.ip;
+		}
+
 		// Handle @Res
 		if (resIndex !== undefined) {
 			args[resIndex] = response;
@@ -102,14 +161,14 @@ export async function executeRoute(this: any, request: Request, response: Respon
 			args[reqIndex] = request;
 		}
 		
-		if(reqFilesIndex) {
+		if (reqFilesIndex) {
 			switch (reqFilesIndex.options.type) {
 				case 'single':
-                    args[reqFilesIndex.parameterIndex] = request.file;
-                    break;
-                default:
-                    args[reqFilesIndex.parameterIndex] = request.files;
-                    break;
+					args[reqFilesIndex.parameterIndex] = request.file;
+					break;
+				default:
+					args[reqFilesIndex.parameterIndex] = request.files;
+					break;
 			}
 		}
 		
@@ -117,7 +176,7 @@ export async function executeRoute(this: any, request: Request, response: Respon
 		if (reqBodyIndex !== undefined) {
 			const ResBodyType = Reflect.getMetadata(DECORATOR_KEY.REQUEST_BODY_TYPE, this.controllerInstance, this.methodName);
 			const ResBodyTypeOptions = Reflect.getMetadata(DECORATOR_KEY.REQUEST_BODY_OPTIONS, this.controllerInstance, this.methodName);
-
+			
 			if (ResBodyType) {
 				const instance = plainToInstance(ResBodyType, request.body, ResBodyTypeOptions);
 				const errors = await validate(instance);
@@ -139,7 +198,6 @@ export async function executeRoute(this: any, request: Request, response: Respon
 			result.then((data) => {
 				this.appContext.sendJsonResponse({
 					data,
-					status: response.statusCode,
 					request,
 					response
 				});
@@ -147,7 +205,6 @@ export async function executeRoute(this: any, request: Request, response: Respon
 		} else if (result !== undefined) {
 			this.appContext.sendJsonResponse({
 				data: result,
-				status: response.statusCode,
 				request,
 				response
 			});

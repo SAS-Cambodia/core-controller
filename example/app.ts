@@ -60,7 +60,6 @@ export class Service {
 
 @Injectable({type: 'AFTER'})
 export class NotFoundInterceptor implements Interceptor {
-	
 	intercept(context: Action) {
 		return {
 			message: 'Route Not Found',
@@ -74,7 +73,6 @@ export class NotFoundInterceptor implements Interceptor {
 
 @Injectable()
 export class ResponseTransformerInterceptor implements Interceptor {
-	
 	intercept(context: Context, data: any) {
 		const before = Date.now();
 		return {
