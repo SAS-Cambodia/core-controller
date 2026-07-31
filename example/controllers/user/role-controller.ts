@@ -13,7 +13,8 @@ import {
 	Req,
 	RequirePlan,
 	UseGuards,
-	BadRequestError, Injectable
+	BadRequestError,
+	Injectable,
 } from "../../../src";
 
 import { Service } from "../../app";
@@ -119,6 +120,23 @@ export class RoleController {
 	@Get('/insufficient-balance')
 	insufficientBalance() {
 		throw new HttpError('Insufficient balance', 40001, { reason: 'low balance' }, { bodyOnly: true });
+	}
+}
+
+// Class-level @RequirePlan: every route on this controller requires it —
+// unlike RoleController's per-route mix above (most routes stay open so
+// the other demos here don't need a token), this whole feature area is
+// paid-tier only, e.g. an audit log of role changes.
+@RequirePlan('pro', 'enterprise')
+@Controller('/role/audit-log')
+export class RoleAuditLogController {
+
+	@Get()
+	list() {
+		return [
+			{ action: 'role.create', actor: 'admin', at: '2026-07-30T10:00:00Z' },
+			{ action: 'role.update', actor: 'admin', at: '2026-07-30T11:15:00Z' }
+		];
 	}
 }
 
