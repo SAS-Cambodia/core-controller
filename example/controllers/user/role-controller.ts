@@ -1,4 +1,20 @@
-import {AccessControl, Body, Controller, Cookies, Get, Headers, HttpError, Ip, Post, Put, Query, Req, UseGuards,BadRequestError} from "../../../src";
+import {
+	AccessControl,
+	Body,
+	Controller,
+	Cookies,
+	Get,
+	Headers,
+	HttpError,
+	Ip,
+	Post,
+	Put,
+	Query,
+	Req,
+	RequirePlan,
+	UseGuards,
+	BadRequestError, Injectable
+} from "../../../src";
 
 import { Service } from "../../app";
 import { Inject } from "../../../src";
@@ -6,9 +22,17 @@ import { UserDto } from "./dto/user-dto";
 import { ListQueryDto } from "./dto/list-query-dto";
 import { RolesGuard } from "../../guards/roles-guard";
 
+@Injectable()
+class RoleService {
+	get(filer: ListQueryDto) {
+		return "dd"
+	}
+}
 
 @Controller('/role')
 export class RoleController {
+	
+	constructor(private readonly roleService: RoleService) {}
 	
 	@Inject()
 	private service: Service;
@@ -23,8 +47,13 @@ export class RoleController {
 	}
 	
 	@Get('/test-b')
-	async getName() {
+	async getName(@Query() query: ListQueryDto): Promise<string> {
 		return "test-b"
+	}
+	
+	@Get('/test-c')
+	async getNameC(@Query() filter: ListQueryDto) {
+		return this.roleService.get(filter)
 	}
 	
 	@Post()
@@ -50,6 +79,24 @@ export class RoleController {
 	@Get('/admin-only-guarded')
 	adminOnlyGuarded() {
 		return "admin content, guarded";
+	}
+
+	// @RequirePlan gates by the store's subscription tier, independent of
+	// @AccessControl's role check — resolved from the POS auth token, see
+	// PosPlanAccessControlGuard. Get one via POST /api/v1/auth/token.
+	@RequirePlan('pro', 'enterprise')
+	@Get('/pro-feature')
+	proFeature() {
+		return "pro feature content";
+	}
+
+	// @AccessControl and @RequirePlan compose: both must pass — an admin on
+	// a store without an enterprise plan is still forbidden here.
+	@AccessControl('admin')
+	@RequirePlan('enterprise')
+	@Get('/admin-enterprise-feature')
+	adminEnterpriseFeature() {
+		return "admin + enterprise feature content";
 	}
 
 	@Get('/whoami')

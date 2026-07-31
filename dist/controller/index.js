@@ -19,6 +19,7 @@ const util_1 = require("./util");
 __exportStar(require("./decorator/controller"), exports);
 __exportStar(require("./decorator/socket-controller"), exports);
 __exportStar(require("./decorator/access-control"), exports);
+__exportStar(require("./decorator/require-plan"), exports);
 // decorator
 __exportStar(require("./decorator/response"), exports);
 __exportStar(require("./decorator/request"), exports);

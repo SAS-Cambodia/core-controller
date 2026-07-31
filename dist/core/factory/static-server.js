@@ -105,6 +105,21 @@ class CoreApplication {
         this.accessControlGuard = new guard();
     }
     /**
+     * Registers the plan-resolution guard used to enforce @RequirePlan(), for
+     * gating features behind a caller's subscription tier. Independent of
+     * @AccessControl/useAccessControl — a route can require a role and a plan
+     * at the same time, since "who you are" and "what you're subscribed to"
+     * are separate axes.
+     *
+     * Must be called before start(), since @RequirePlan-guarded routes/events
+     * are validated against this guard during controller registration.
+     *
+     * @param guard - A class implementing PlanAccessControlGuard.
+     */
+    usePlanAccessControl(guard) {
+        this.planGuard = new guard();
+    }
+    /**
      * Retrieves an instance of the given provider target from the container.
      *
      * @param {ProviderTarget<T>} target - The provider target or token used to resolve the instance.
@@ -191,10 +206,23 @@ class CoreApplication {
     resolveAccessControlRoles(methodRoles, classRoles) {
         return methodRoles !== undefined ? methodRoles : classRoles;
     }
-    isRoleAllowed(accessControlRoles, resolvedRoles) {
-        return accessControlRoles.length === 0
-            ? resolvedRoles.length > 0
-            : resolvedRoles.some((role) => accessControlRoles.includes(role));
+    /**
+     * Resolves the effective @RequirePlan list for a method, falling back
+     * to the class-level plans when the method itself isn't annotated —
+     * same fallback semantics as resolveAccessControlRoles.
+     */
+    resolvePlanRequirement(methodPlans, classPlans) {
+        return methodPlans !== undefined ? methodPlans : classPlans;
+    }
+    /**
+     * Set-membership check shared by @AccessControl and @RequirePlan: an empty
+     * requirement list just means "must resolve to something", otherwise the
+     * resolved list must intersect the required list.
+     */
+    hasRequiredMatch(required, resolved) {
+        return required.length === 0
+            ? resolved.length > 0
+            : resolved.some((value) => required.includes(value));
     }
     /**
      * Returns the registered AccessControlGuard or throws, since guarded routes/events
@@ -206,12 +234,37 @@ class CoreApplication {
         }
         return this.accessControlGuard;
     }
+    /**
+     * Returns the registered PlanAccessControlGuard or throws, since @RequirePlan-guarded
+     * routes/events are only valid once usePlanAccessControl() has been called.
+     */
+    requirePlanGuard(label) {
+        if (!this.planGuard) {
+            throw new Error(`[RequirePlan] ${label} requires @RequirePlan but no guard was registered. Call app.usePlanAccessControl(YourGuard) before app.start().`);
+        }
+        return this.planGuard;
+    }
     buildHttpAccessControlMiddleware(accessControlRoles, label) {
         const guard = this.requireAccessControlGuard(label);
         return (request, response, next) => __awaiter(this, void 0, void 0, function* () {
             try {
                 const resolvedRoles = yield guard.resolveRoles({ request, response });
-                if (!this.isRoleAllowed(accessControlRoles, resolvedRoles)) {
+                if (!this.hasRequiredMatch(accessControlRoles, resolvedRoles)) {
+                    return next(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN));
+                }
+                next();
+            }
+            catch (e) {
+                next(e);
+            }
+        });
+    }
+    buildHttpPlanMiddleware(requiredPlans, label) {
+        const guard = this.requirePlanGuard(label);
+        return (request, response, next) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const resolvedPlans = yield guard.resolvePlans({ request, response });
+                if (!this.hasRequiredMatch(requiredPlans, resolvedPlans)) {
                     return next(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN));
                 }
                 next();
@@ -278,6 +331,12 @@ class CoreApplication {
         if (accessControlRoles !== undefined) {
             args.push(this.buildHttpAccessControlMiddleware(accessControlRoles, `${ControllerClass.name}.${methodName}`));
         }
+        const methodPlans = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUIRE_PLAN, prototype, methodName);
+        const classPlans = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUIRE_PLAN, ControllerClass);
+        const requiredPlans = this.resolvePlanRequirement(methodPlans, classPlans);
+        if (requiredPlans !== undefined) {
+            args.push(this.buildHttpPlanMiddleware(requiredPlans, `${ControllerClass.name}.${methodName}`));
+        }
         const guards = this.resolveGuards(prototype, ControllerClass, methodName);
         if (guards.length > 0) {
             args.push((request, response, next) => __awaiter(this, void 0, void 0, function* () {
@@ -300,15 +359,13 @@ class CoreApplication {
         }));
         // @ts-ignore
         router[classMethod](...args);
-        if (this.options.enableLogging) {
-            logger.push({
-                BasePath: `${routePath}${route_path}`,
-                Event: classMethod.toUpperCase(),
-                ControllerName: ControllerClass.name,
-                ImplementMethod: methodName,
-                Type: "API"
-            });
-        }
+        logger.push({
+            BasePath: `${routePath}${route_path}`,
+            Event: classMethod.toUpperCase(),
+            ControllerName: ControllerClass.name,
+            ImplementMethod: methodName,
+            Type: "API"
+        });
     }
     /**
      * Marshals args (@SocketInstance/@SocketCallback/@SocketData/@SocketBody), enforces
@@ -326,13 +383,22 @@ class CoreApplication {
         const methodRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
         const classRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
         const accessControlRoles = this.resolveAccessControlRoles(methodRoles, classRoles);
+        const methodPlans = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUIRE_PLAN, prototype, methodName);
+        const classPlans = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUIRE_PLAN, subscribers.instance.constructor);
+        const requiredPlans = this.resolvePlanRequirement(methodPlans, classPlans);
         const guards = this.resolveGuards(prototype, subscribers.instance.constructor, methodName);
         const args = [];
         socket.on(event, (data, callback) => __awaiter(this, void 0, void 0, function* () {
             try {
                 if (accessControlRoles !== undefined) {
                     const resolvedRoles = yield this.accessControlGuard.resolveRoles({ socket, data });
-                    if (!this.isRoleAllowed(accessControlRoles, resolvedRoles)) {
+                    if (!this.hasRequiredMatch(accessControlRoles, resolvedRoles)) {
+                        return callback ? callback(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN)) : undefined;
+                    }
+                }
+                if (requiredPlans !== undefined) {
+                    const resolvedPlans = yield this.planGuard.resolvePlans({ socket, data });
+                    if (!this.hasRequiredMatch(requiredPlans, resolvedPlans)) {
                         return callback ? callback(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN)) : undefined;
                     }
                 }
@@ -390,7 +456,7 @@ class CoreApplication {
             });
             const businessId = yield getBusinessId();
             const socketRoom = businessId !== null ? `${basePath}-${businessId}` : basePath;
-            if (this.options.enableLogging && businessId !== null) {
+            if (businessId !== null) {
                 logger.forEach((value) => {
                     if (value.BasePath === basePath) {
                         value.BasePath = socketRoom;
@@ -409,6 +475,12 @@ class CoreApplication {
                 const accessControlRoles = this.resolveAccessControlRoles(methodRoles, classRoles);
                 if (accessControlRoles !== undefined) {
                     this.requireAccessControlGuard(`Socket event "${methodName}"`);
+                }
+                const methodPlans = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUIRE_PLAN, subscribersPrototype, methodName);
+                const classPlans = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUIRE_PLAN, subscribers.instance.constructor);
+                const requiredPlans = this.resolvePlanRequirement(methodPlans, classPlans);
+                if (requiredPlans !== undefined) {
+                    this.requirePlanGuard(`Socket event "${methodName}"`);
                 }
             });
             orderNamespace.on('connection', (socket) => {
@@ -449,15 +521,13 @@ class CoreApplication {
                         instance: controllerInstance,
                         methods: []
                     });
-                    if (this.options.enableLogging) {
-                        logger.push({
-                            BasePath: basePath,
-                            Event: "ROOT",
-                            ControllerName: ControllerClass.name,
-                            ImplementMethod: "onConnect",
-                            Type: "SOCKET"
-                        });
-                    }
+                    logger.push({
+                        BasePath: basePath,
+                        Event: "ROOT",
+                        ControllerName: ControllerClass.name,
+                        ImplementMethod: "onConnect",
+                        Type: "SOCKET"
+                    });
                 }
                 // Start config Route Api
                 const routePath = ((_a = this.excludePrefix) === null || _a === void 0 ? void 0 : _a.includes(basePath)) ? basePath : this.prefix ? this.prefix + basePath : basePath;
@@ -474,15 +544,13 @@ class CoreApplication {
                     }
                     else {
                         (_b = socketEvent.get(basePath)) === null || _b === void 0 ? void 0 : _b.methods.push(methodName);
-                        if (this.options.enableLogging) {
-                            logger.push({
-                                BasePath: basePath,
-                                Event: route_path,
-                                ControllerName: ControllerClass.name,
-                                ImplementMethod: methodName,
-                                Type: "SOCKET"
-                            });
-                        }
+                        logger.push({
+                            BasePath: basePath,
+                            Event: route_path,
+                            ControllerName: ControllerClass.name,
+                            ImplementMethod: methodName,
+                            Type: "SOCKET"
+                        });
                     }
                 }
                 this.server.use(routePath, router);
@@ -493,6 +561,7 @@ class CoreApplication {
             }
             if (this.options.enableLogging)
                 console.table(logger);
+            return logger;
         });
     }
     // Helper method to instantiate controllers with injected providers
@@ -574,6 +643,18 @@ class CoreApplication {
             this.server.use(middleware.use);
         });
     }
+    /**
+     * Hands the full registered route list (HTTP API + Socket.IO events) to any
+     * middleware implementing the optional `setRoutes()` method, once controller
+     * registration has finished and before the server starts listening.
+     */
+    notifyMiddlewareRoutes(routes) {
+        this.middlewares.forEach((middleware) => {
+            if (typeof middleware.setRoutes === "function") {
+                middleware.setRoutes(routes);
+            }
+        });
+    }
     registerResponseInterceptors() {
         if (this.interceptors.length > 0) {
             this.interceptors.forEach((interceptor) => {
@@ -626,7 +707,8 @@ class CoreApplication {
             this.applyRateLimit();
             this.executeMiddleware();
             this.registerResponseInterceptors();
-            yield this.registerController(this.controllerClasses, this.providers);
+            const routes = yield this.registerController(this.controllerClasses, this.providers);
+            this.notifyMiddlewareRoutes(routes);
             this.applyNotFoundHandler();
             this.catch();
             this.httpServer.listen(port, callback);

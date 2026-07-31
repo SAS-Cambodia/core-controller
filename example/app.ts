@@ -9,7 +9,8 @@ import {
 	NotFoundHandler,
 	ResponseInterceptor,
 	ServerFactory,
-	CoreMiddleware, HttpStatusCode
+	CoreMiddleware, HttpStatusCode,
+	RouteInfo
 } from "../src";
 import dotenv from "dotenv";
 
@@ -22,6 +23,8 @@ import {
 } from "express";
 import { UserDto } from "./controllers/user/dto/user-dto";
 import { DemoAccessControlGuard } from "./guards/access-control-guard";
+import { PosPlanAccessControlGuard } from "./guards/plan-access-control-guard";
+import { verifyPosToken } from "./guards/pos-jwt";
 
 @Injectable()
 class GlobalErrorInterceptor implements ErrorInterceptor {
@@ -90,8 +93,14 @@ export class ResponseTransformerInterceptor implements Interceptor {
 
 @Injectable()
 class Middleware implements CoreMiddleware {
+	private routes: RouteInfo[] = [];
 	use(req: Request, res: Response, next: NextFunction): void {
+		console.log(`Route Not Found: ${req.url}`);
+		
 		next()
+	}
+	setRoutes(routes: RouteInfo[]): void {
+		this.routes = routes;
 	}
 }
 
@@ -106,6 +115,13 @@ const app = ServerFactory.createServer({
 	SocketIO: Server,
 	socketMiddleware: (socket, next) => {
 		socket.data.user = "ME";
+		// Decoded once at connection time (not per-event) so bindSocketEvent's
+		// @RequirePlan check can read socket.data.plan cheaply on every event.
+		const claims = verifyPosToken(socket.handshake.auth?.token);
+		if (claims) {
+			socket.data.plan = claims.plan;
+			socket.data.storeId = claims.storeId;
+		}
 		next();
 	},
 	socketOptions: {
@@ -136,6 +152,7 @@ app.setBodyParserOptions({
 });
 app.useGlobalMiddleware(Middleware)
 app.useAccessControl(DemoAccessControlGuard);
+app.usePlanAccessControl(PosPlanAccessControlGuard);
 app.setGlobalPrefix('/api/v1');
 // Business-code errors thrown with `bodyOnly: true` (see RoleController.insufficientBalance)
 // respond with this HTTP status; the real code stays in the body.

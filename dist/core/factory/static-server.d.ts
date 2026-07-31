@@ -2,7 +2,7 @@ import { Options, OptionsJson, OptionsUrlencoded, OptionsText } from 'body-parse
 import { CorsOptions, CorsOptionsDelegate } from "cors";
 import { serverOptions } from "./index";
 import { Options as RateOptions } from "express-rate-limit";
-import { AccessControlGuard, NotFoundHandler } from "../../interface";
+import { AccessControlGuard, NotFoundHandler, PlanAccessControlGuard } from "../../interface";
 import { ProviderTarget } from "../../type";
 export declare class CoreApplication {
     private options;
@@ -17,6 +17,7 @@ export declare class CoreApplication {
     private requestLoggingEnabled;
     private middlewares;
     private accessControlGuard?;
+    private planGuard?;
     private prefix?;
     private excludePrefix?;
     private readonly controllerClasses;
@@ -44,6 +45,19 @@ export declare class CoreApplication {
      * @param guard - A class implementing AccessControlGuard.
      */
     useAccessControl(guard: new (...args: any[]) => AccessControlGuard): void;
+    /**
+     * Registers the plan-resolution guard used to enforce @RequirePlan(), for
+     * gating features behind a caller's subscription tier. Independent of
+     * @AccessControl/useAccessControl — a route can require a role and a plan
+     * at the same time, since "who you are" and "what you're subscribed to"
+     * are separate axes.
+     *
+     * Must be called before start(), since @RequirePlan-guarded routes/events
+     * are validated against this guard during controller registration.
+     *
+     * @param guard - A class implementing PlanAccessControlGuard.
+     */
+    usePlanAccessControl(guard: new (...args: any[]) => PlanAccessControlGuard): void;
     /**
      * Retrieves an instance of the given provider target from the container.
      *
@@ -105,13 +119,30 @@ export declare class CoreApplication {
      * to the class-level roles when the method itself isn't annotated.
      */
     private resolveAccessControlRoles;
-    private isRoleAllowed;
+    /**
+     * Resolves the effective @RequirePlan list for a method, falling back
+     * to the class-level plans when the method itself isn't annotated —
+     * same fallback semantics as resolveAccessControlRoles.
+     */
+    private resolvePlanRequirement;
+    /**
+     * Set-membership check shared by @AccessControl and @RequirePlan: an empty
+     * requirement list just means "must resolve to something", otherwise the
+     * resolved list must intersect the required list.
+     */
+    private hasRequiredMatch;
     /**
      * Returns the registered AccessControlGuard or throws, since guarded routes/events
      * are only valid once useAccessControl() has been called.
      */
     private requireAccessControlGuard;
+    /**
+     * Returns the registered PlanAccessControlGuard or throws, since @RequirePlan-guarded
+     * routes/events are only valid once usePlanAccessControl() has been called.
+     */
+    private requirePlanGuard;
     private buildHttpAccessControlMiddleware;
+    private buildHttpPlanMiddleware;
     /**
      * Collects @UseGuards() guards from class + method level (both run, unlike
      * @AccessControl's method-overrides-class semantics) and instantiates them.
@@ -175,6 +206,12 @@ export declare class CoreApplication {
     private applyCors;
     private applyRateLimit;
     private executeMiddleware;
+    /**
+     * Hands the full registered route list (HTTP API + Socket.IO events) to any
+     * middleware implementing the optional `setRoutes()` method, once controller
+     * registration has finished and before the server starts listening.
+     */
+    private notifyMiddlewareRoutes;
     private registerResponseInterceptors;
     private applyNotFoundHandler;
     private catch;
