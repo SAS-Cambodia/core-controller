@@ -1,9 +1,9 @@
 import { CoreApplication } from "./static-server";
-import { Server ,Socket,ExtendedError,} from "socket.io";
+import { SocketApplication } from "./socket-server";
+import { ServerAdapter } from "./server-adapter";
+import { Server } from "socket.io";
 import type { IncomingMessage } from "http";
-import type { CorsOptions, CorsOptionsDelegate } from "cors";
 import { CookieSerializeOptions } from "engine.io/build/contrib/types.cookie";
-
 import { Request, Response } from "express";
 import { Interceptor } from "../../interface";
 type Transport = "polling" | "websocket" | "webtransport";
@@ -83,10 +83,6 @@ export interface SocketServerOptions {
 		name: string;
 	}) | boolean;
 	/**
-	 * the options that will be forwarded to the cors module
-	 */
-	cors?: CorsOptions | CorsOptionsDelegate;
-	/**
 	 * whether to enable compatibility with Socket.IO v2 clients
 	 * @default false
 	 */
@@ -97,17 +93,31 @@ export type serverOptions = {
 	controllers: Function[] | string[],
 	providers?: Function[],
 	enableLogging?: boolean,
-	SocketIO?: typeof Server,
-	socketOptions?: SocketServerOptions,
-	socketMiddleware?: (socket: Socket,next: (err?: ExtendedError) => void) => void
+	adapter?: ServerAdapter
 }
 
+export type socketServerAppOptions = {
+	controllers: Function[] | string[],
+	providers?: Function[],
+	enableLogging?: boolean,
+	SocketIO: typeof Server,
+	socketOptions?: SocketServerOptions,
+	adapter?: ServerAdapter
+}
 
-export class ServerFactory {
+export class FactoryController {
 	static createServer(options: serverOptions): CoreApplication {
 		return new CoreApplication(options);
 	}
+	static createSocketServer(options: socketServerAppOptions): SocketApplication {
+		return new SocketApplication(options);
+	}
+	static createAdapter(): ServerAdapter {
+		return new ServerAdapter();
+	}
 }
+
+export { CoreApplication, SocketApplication, ServerAdapter };
 
 export interface EmitInterceptor {
 	method: string,
@@ -116,7 +126,7 @@ export interface EmitInterceptor {
 	interceptor: Interceptor,
 	request: Request;
 	response: Response;
-} 
+}
 
 export interface SendJsonResponse {
 	data: any,

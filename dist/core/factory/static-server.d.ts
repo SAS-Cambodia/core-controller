@@ -1,28 +1,38 @@
+import { Express } from 'express';
 import { Options, OptionsJson, OptionsUrlencoded, OptionsText } from 'body-parser';
 import { CorsOptions, CorsOptionsDelegate } from "cors";
 import { serverOptions } from "./index";
 import { Options as RateOptions } from "express-rate-limit";
-import { AccessControlGuard, NotFoundHandler } from "../../interface";
+import { AccessControlGuard, NotFoundHandler, PlanAccessControlGuard } from "../../interface";
 import { ProviderTarget } from "../../type";
 export declare class CoreApplication {
     private options;
-    server: import("express-serve-static-core").Express;
+    /**
+     * The underlying Express application. Constructed synchronously in the
+     * constructor, so it's available immediately after createServer() returns —
+     * use it as an escape hatch to call any native Express API directly
+     * (app.server.set(...), app.server.enable(...), app.server.disable(...),
+     * app.server.locals, mounting extra routes/middleware not covered by this
+     * library's own methods, etc.).
+     */
+    server: Express;
     private corsOptions;
     private interceptors;
     private interceptorError;
     private notFoundHandler?;
-    private socketServer;
     private rateLimitOptions?;
     private defaultErrorStatusCode?;
     private requestLoggingEnabled;
     private middlewares;
     private accessControlGuard?;
+    private planGuard?;
     private prefix?;
     private excludePrefix?;
+    private readonly adapter?;
     private readonly controllerClasses;
     private readonly httpServer;
-    private readonly providers?;
     private readonly appContext;
+    private started;
     constructor(options: serverOptions);
     /**
      * Registers global middleware functions to be used by the application.
@@ -44,6 +54,19 @@ export declare class CoreApplication {
      * @param guard - A class implementing AccessControlGuard.
      */
     useAccessControl(guard: new (...args: any[]) => AccessControlGuard): void;
+    /**
+     * Registers the plan-resolution guard used to enforce @RequirePlan(), for
+     * gating features behind a caller's subscription tier. Independent of
+     * @AccessControl/useAccessControl — a route can require a role and a plan
+     * at the same time, since "who you are" and "what you're subscribed to"
+     * are separate axes.
+     *
+     * Must be called before start(), since @RequirePlan-guarded routes/events
+     * are validated against this guard during controller registration.
+     *
+     * @param guard - A class implementing PlanAccessControlGuard.
+     */
+    usePlanAccessControl(guard: new (...args: any[]) => PlanAccessControlGuard): void;
     /**
      * Retrieves an instance of the given provider target from the container.
      *
@@ -100,38 +123,11 @@ export declare class CoreApplication {
      * @param handler - A class implementing NotFoundHandler.
      */
     useNotFoundHandler(handler: new (...args: any[]) => NotFoundHandler): void;
-    /**
-     * Resolves the effective @AccessControl role list for a method, falling back
-     * to the class-level roles when the method itself isn't annotated.
-     */
-    private resolveAccessControlRoles;
-    private isRoleAllowed;
-    /**
-     * Returns the registered AccessControlGuard or throws, since guarded routes/events
-     * are only valid once useAccessControl() has been called.
-     */
-    private requireAccessControlGuard;
     private buildHttpAccessControlMiddleware;
-    /**
-     * Collects @UseGuards() guards from class + method level (both run, unlike
-     * @AccessControl's method-overrides-class semantics) and instantiates them.
-     */
-    private resolveGuards;
-    private runGuards;
+    private buildHttpPlanMiddleware;
     private buildFileUploadMiddleware;
     private registerHttpRoute;
-    /**
-     * Marshals args (@SocketInstance/@SocketCallback/@SocketData/@SocketBody), enforces
-     * @AccessControl, validates @SocketBody, and binds a single socket event listener.
-     */
-    private bindSocketEvent;
-    /**
-     * Resolves (or creates) the socket namespace for basePath, registers @AccessControl
-     * pre-checks, and binds connection/event listeners for its subscribers.
-     */
-    private registerSocketNamespace;
     private registerController;
-    private instantiateController;
     /**
      * Configures body parsing options for the Express server.
      * This method sets up middleware to parse incoming request bodies based on the provided options.
@@ -175,8 +171,15 @@ export declare class CoreApplication {
     private applyCors;
     private applyRateLimit;
     private executeMiddleware;
+    /**
+     * Hands the full registered HTTP route list to any middleware implementing
+     * the optional `setRoutes()` method, once controller registration has
+     * finished and before the server starts listening.
+     */
+    private notifyMiddlewareRoutes;
     private registerResponseInterceptors;
     private applyNotFoundHandler;
     private catch;
-    start(port: number | string, callback: () => void): Promise<void>;
+    start(): Promise<void>;
+    start(port: number | string, callback?: () => void): Promise<void>;
 }

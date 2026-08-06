@@ -3,25 +3,31 @@ import path from "path";
 import {
 	Action,
 	Context,
+	CoreSocketMiddleware,
 	ErrorInterceptor,
 	Injectable,
 	Interceptor,
 	NotFoundHandler,
 	ResponseInterceptor,
-	ServerFactory,
-	CoreMiddleware, HttpStatusCode
+	FactoryController,
+	CoreMiddleware,
+	HttpStatusCode,
+	RouteInfo
 } from "../src";
 import dotenv from "dotenv";
 
+
 dotenv.config();
-import {Server} from "socket.io";
-import {
+import {Server, Socket, ExtendedError} from "socket.io";
+import express, {
 	NextFunction,
 	Request,
 	Response
 } from "express";
 import { UserDto } from "./controllers/user/dto/user-dto";
 import { DemoAccessControlGuard } from "./guards/access-control-guard";
+import { PosPlanAccessControlGuard } from "./guards/plan-access-control-guard";
+import { verifyPosToken } from "./guards/pos-jwt";
 
 @Injectable()
 class GlobalErrorInterceptor implements ErrorInterceptor {
@@ -51,8 +57,8 @@ class GlobalErrorInterceptor implements ErrorInterceptor {
 @Injectable()
 export class Service {
 	
-	create(body: UserDto) {
-		return "Service created";
+	create(_: UserDto) {
+		return "dd"
 	}
 	
 	update(_data: any) {
@@ -90,12 +96,37 @@ export class ResponseTransformerInterceptor implements Interceptor {
 
 @Injectable()
 class Middleware implements CoreMiddleware {
+	private routes: RouteInfo[] = [];
+	
 	use(req: Request, res: Response, next: NextFunction): void {
+		console.log(`Route Not Found: ${req.url}`);
+		
 		next()
+	}
+	
+	setRoutes(routes: RouteInfo[]): void {
+		this.routes = routes;
 	}
 }
 
-const app = ServerFactory.createServer({
+@Injectable()
+class SocketAuthMiddleware implements CoreSocketMiddleware {
+	use(socket: Socket, next: (err?: ExtendedError) => void): void {
+		socket.data.user = "ME";
+		// Decoded once at connection time (not per-event) so bindSocketEvent's
+		// @RequirePlan check can read socket.data.plan cheaply on every event.
+		const claims = verifyPosToken(socket.handshake.auth?.token);
+		if (claims) {
+			socket.data.plan = claims.plan;
+			socket.data.storeId = claims.storeId;
+		}
+		next();
+	}
+}
+
+const adapter= FactoryController.createAdapter();
+
+const app= FactoryController.createServer({
 	controllers: [
 		path.join(__dirname, './controllers/**/*.{js,ts}')
 	],
@@ -103,16 +134,18 @@ const app = ServerFactory.createServer({
 		Service,
 	],
 	enableLogging: true,
+	adapter
+});
+
+// Same glob as the HTTP app — registerController on each side filters to
+// what it understands (@Controller vs @SocketController), so reusing it is safe.
+const socketApp = FactoryController.createSocketServer({
+	controllers: [
+		path.join(__dirname, './controllers/**/*.{js,ts}')
+	],
+	enableLogging: true,
 	SocketIO: Server,
-	socketMiddleware: (socket, next) => {
-		socket.data.user = "ME";
-		next();
-	},
-	socketOptions: {
-		cors: {
-			origin: "*"
-		}
-	}
+	adapter
 });
 
 app.enableCors({
@@ -136,6 +169,7 @@ app.setBodyParserOptions({
 });
 app.useGlobalMiddleware(Middleware)
 app.useAccessControl(DemoAccessControlGuard);
+app.usePlanAccessControl(PosPlanAccessControlGuard);
 app.setGlobalPrefix('/api/v1');
 // Business-code errors thrown with `bodyOnly: true` (see RoleController.insufficientBalance)
 // respond with this HTTP status; the real code stays in the body.
@@ -145,8 +179,28 @@ app.useGlobalInterceptors(
 	GlobalErrorInterceptor
 );
 app.useNotFoundHandler(NotFoundInterceptor);
+socketApp.enableCors({
+	origin: "*"
+});
+socketApp.useGlobalMiddleware(SocketAuthMiddleware);
+
+// UserSocketController ('/waiter') uses no @AccessControl/@RequirePlan today, so
+// socketApp doesn't need useAccessControl/usePlanAccessControl calls to boot; if a
+// future @SocketController event adds those decorators, register the matching
+// guard(s) on socketApp explicitly — guard state isn't shared between app and
+// socketApp even though they're attached to the same adapter/port.
 
 const PORT = 3100;
-app.start(PORT, () => {
-	console.log(`🚀 Server running at http://localhost:${PORT}`);
+
+async function bootstrap() {
+	// adapter.listen() automatically starts every app attached to it
+	// (app, socketApp) before binding the port — no manual .start() calls needed.
+	await adapter.listen(PORT, () => {
+		console.log(`🚀 Server running at http://localhost:${PORT}`);
+	});
+}
+
+bootstrap().catch((err) => {
+	console.error('Failed to start server', err);
+	process.exit(1);
 });

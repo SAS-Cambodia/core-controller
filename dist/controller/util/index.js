@@ -18,6 +18,7 @@ exports.prepareController = prepareController;
 exports.isInterceptor = isInterceptor;
 exports.isInterceptorError = isInterceptorError;
 exports.isMiddleware = isMiddleware;
+exports.isSocketMiddleware = isSocketMiddleware;
 exports.parseCookies = parseCookies;
 exports.executeRoute = executeRoute;
 const path_1 = __importDefault(require("path"));
@@ -77,6 +78,9 @@ function isInterceptorError(obj) {
     return typeof obj.catch === 'function';
 }
 function isMiddleware(obj) {
+    return typeof obj.use === 'function';
+}
+function isSocketMiddleware(obj) {
     return typeof obj.use === 'function';
 }
 /**

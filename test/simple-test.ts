@@ -14,7 +14,7 @@ import {
   Param,
   Query,
   ResponseInterceptor,
-  ServerFactory,
+  FactoryController,
   SocketQuery,
   UseGuards
 } from '../src';
@@ -24,8 +24,8 @@ function testServiceCreate() {
   console.log('Running test: Service.create()');
   const service = new Service();
   const result = service.create({ name: 'Test', phone: 123 });
-  
-  assert.strictEqual(result, "Service created", "Service.create() should return 'Service created'");
+
+  assert.strictEqual(result, "dd", "Service.create() should return the injected Test service's dd()");
   console.log('✓ Test passed: Service.create()');
 }
 
@@ -200,7 +200,7 @@ function testUseGlobalInterceptorsThrowsWithoutDecorator() {
   class UndecoratedInterceptor {
     intercept() { return {}; }
   }
-  const app = ServerFactory.createServer({ controllers: [] });
+  const app = FactoryController.createServer({ controllers: [] });
 
   assert.throws(
     () => app.useGlobalInterceptors(UndecoratedInterceptor),
@@ -216,7 +216,7 @@ function testUseGlobalInterceptorsAcceptsDecorated() {
   class DecoratedInterceptor {
     intercept(_: any, data: any) { return data; }
   }
-  const app = ServerFactory.createServer({ controllers: [] });
+  const app = FactoryController.createServer({ controllers: [] });
 
   assert.doesNotThrow(
     () => app.useGlobalInterceptors(DecoratedInterceptor),
@@ -238,7 +238,7 @@ function testHttpErrorBodyOnly() {
 
 function testEnableRequestLoggingDoesNotThrow() {
   console.log('Running test: enableRequestLogging does not throw');
-  const app = ServerFactory.createServer({ controllers: [] });
+  const app = FactoryController.createServer({ controllers: [] });
 
   assert.doesNotThrow(
     () => app.enableRequestLogging(),

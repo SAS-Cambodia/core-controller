@@ -51,11 +51,10 @@ const body_parser_1 = __importDefault(require("body-parser"));
 const controller_1 = require("../../controller");
 const app_context_1 = __importDefault(require("./app-context"));
 const http_1 = __importDefault(require("http"));
-const class_transformer_1 = require("class-transformer");
-const class_validator_1 = require("class-validator");
 const http_error_exception_1 = require("../../http-error-exception");
 const http_code_1 = require("../../enums/http-code");
 const di_1 = require("../../di");
+const registration_helpers_1 = require("./shared/registration-helpers");
 class CoreApplication {
     constructor(options) {
         this.options = options;
@@ -65,14 +64,24 @@ class CoreApplication {
         this.requestLoggingEnabled = false;
         this.middlewares = [];
         this.excludePrefix = [];
-        const { SocketIO, socketOptions, providers, controllers } = this.options;
+        this.started = false;
+        const { providers, controllers, adapter } = this.options;
         this.controllerClasses = (0, controller_1.prepareController)(controllers);
         this.server = (0, express_1.default)();
-        this.providers = providers;
         this.appContext = new app_context_1.default();
-        this.httpServer = http_1.default.createServer(this.server);
-        if (SocketIO) {
-            this.socketServer = new SocketIO(this.httpServer, socketOptions);
+        this.adapter = adapter;
+        // Registered immediately (not deferred to start()) so a provider declared
+        // here is resolvable by any other app sharing the same adapter regardless
+        // of which app's start() runs first — the DI container is a process-wide
+        // singleton, so this is effectively whole-app provider sharing.
+        (0, registration_helpers_1.registerProviders)(providers);
+        if (adapter) {
+            adapter.attachRequestHandler(this.server);
+            this.httpServer = adapter.getHttpServer();
+            adapter.attach(this);
+        }
+        else {
+            this.httpServer = http_1.default.createServer(this.server);
         }
     }
     /**
@@ -103,6 +112,21 @@ class CoreApplication {
      */
     useAccessControl(guard) {
         this.accessControlGuard = new guard();
+    }
+    /**
+     * Registers the plan-resolution guard used to enforce @RequirePlan(), for
+     * gating features behind a caller's subscription tier. Independent of
+     * @AccessControl/useAccessControl — a route can require a role and a plan
+     * at the same time, since "who you are" and "what you're subscribed to"
+     * are separate axes.
+     *
+     * Must be called before start(), since @RequirePlan-guarded routes/events
+     * are validated against this guard during controller registration.
+     *
+     * @param guard - A class implementing PlanAccessControlGuard.
+     */
+    usePlanAccessControl(guard) {
+        this.planGuard = new guard();
     }
     /**
      * Retrieves an instance of the given provider target from the container.
@@ -184,34 +208,12 @@ class CoreApplication {
     useNotFoundHandler(handler) {
         this.notFoundHandler = new handler();
     }
-    /**
-     * Resolves the effective @AccessControl role list for a method, falling back
-     * to the class-level roles when the method itself isn't annotated.
-     */
-    resolveAccessControlRoles(methodRoles, classRoles) {
-        return methodRoles !== undefined ? methodRoles : classRoles;
-    }
-    isRoleAllowed(accessControlRoles, resolvedRoles) {
-        return accessControlRoles.length === 0
-            ? resolvedRoles.length > 0
-            : resolvedRoles.some((role) => accessControlRoles.includes(role));
-    }
-    /**
-     * Returns the registered AccessControlGuard or throws, since guarded routes/events
-     * are only valid once useAccessControl() has been called.
-     */
-    requireAccessControlGuard(label) {
-        if (!this.accessControlGuard) {
-            throw new Error(`[AccessControl] ${label} requires @AccessControl but no guard was registered. Call app.useAccessControl(YourGuard) before app.start().`);
-        }
-        return this.accessControlGuard;
-    }
     buildHttpAccessControlMiddleware(accessControlRoles, label) {
-        const guard = this.requireAccessControlGuard(label);
+        const guard = (0, registration_helpers_1.requireAccessControlGuard)(this.accessControlGuard, label);
         return (request, response, next) => __awaiter(this, void 0, void 0, function* () {
             try {
                 const resolvedRoles = yield guard.resolveRoles({ request, response });
-                if (!this.isRoleAllowed(accessControlRoles, resolvedRoles)) {
+                if (!(0, registration_helpers_1.hasRequiredMatch)(accessControlRoles, resolvedRoles)) {
                     return next(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN));
                 }
                 next();
@@ -221,22 +223,19 @@ class CoreApplication {
             }
         });
     }
-    /**
-     * Collects @UseGuards() guards from class + method level (both run, unlike
-     * @AccessControl's method-overrides-class semantics) and instantiates them.
-     */
-    resolveGuards(prototype, ctor, methodName) {
-        const classGuards = Reflect.getMetadata(controller_1.DECORATOR_KEY.GUARDS, ctor) || [];
-        const methodGuards = Reflect.getMetadata(controller_1.DECORATOR_KEY.GUARDS, prototype, methodName) || [];
-        return [...classGuards, ...methodGuards].map((GuardClass) => new GuardClass());
-    }
-    runGuards(guards, context) {
-        return __awaiter(this, void 0, void 0, function* () {
-            for (const guard of guards) {
-                if (!(yield guard.canActivate(context)))
-                    return false;
+    buildHttpPlanMiddleware(requiredPlans, label) {
+        const guard = (0, registration_helpers_1.requirePlanGuard)(this.planGuard, label);
+        return (request, response, next) => __awaiter(this, void 0, void 0, function* () {
+            try {
+                const resolvedPlans = yield guard.resolvePlans({ request, response });
+                if (!(0, registration_helpers_1.hasRequiredMatch)(requiredPlans, resolvedPlans)) {
+                    return next(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN));
+                }
+                next();
             }
-            return true;
+            catch (e) {
+                next(e);
+            }
         });
     }
     buildFileUploadMiddleware(fileUpload) {
@@ -274,15 +273,21 @@ class CoreApplication {
         }
         const methodRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
         const classRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, ControllerClass);
-        const accessControlRoles = this.resolveAccessControlRoles(methodRoles, classRoles);
+        const accessControlRoles = (0, registration_helpers_1.resolveAccessControlRoles)(methodRoles, classRoles);
         if (accessControlRoles !== undefined) {
             args.push(this.buildHttpAccessControlMiddleware(accessControlRoles, `${ControllerClass.name}.${methodName}`));
         }
-        const guards = this.resolveGuards(prototype, ControllerClass, methodName);
+        const methodPlans = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUIRE_PLAN, prototype, methodName);
+        const classPlans = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUIRE_PLAN, ControllerClass);
+        const requiredPlans = (0, registration_helpers_1.resolvePlanRequirement)(methodPlans, classPlans);
+        if (requiredPlans !== undefined) {
+            args.push(this.buildHttpPlanMiddleware(requiredPlans, `${ControllerClass.name}.${methodName}`));
+        }
+        const guards = (0, registration_helpers_1.resolveGuards)(prototype, ControllerClass, methodName);
         if (guards.length > 0) {
             args.push((request, response, next) => __awaiter(this, void 0, void 0, function* () {
                 try {
-                    const allowed = yield this.runGuards(guards, { request, response });
+                    const allowed = yield (0, registration_helpers_1.runGuards)(guards, { request, response });
                     if (!allowed) {
                         return next(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN));
                     }
@@ -300,164 +305,31 @@ class CoreApplication {
         }));
         // @ts-ignore
         router[classMethod](...args);
-        if (this.options.enableLogging) {
-            logger.push({
-                BasePath: `${routePath}${route_path}`,
-                Event: classMethod.toUpperCase(),
-                ControllerName: ControllerClass.name,
-                ImplementMethod: methodName,
-                Type: "API"
-            });
-        }
-    }
-    /**
-     * Marshals args (@SocketInstance/@SocketCallback/@SocketData/@SocketBody), enforces
-     * @AccessControl, validates @SocketBody, and binds a single socket event listener.
-     */
-    bindSocketEvent(orderNamespace, socket, controllerInstance, subscribers, methodName) {
-        const prototype = Object.getPrototypeOf(subscribers.instance);
-        const socketIndex = Reflect.getMetadata(controller_1.DECORATOR_KEY.SOCKET_INSTANCE, controllerInstance, methodName);
-        const callBackIndex = Reflect.getMetadata(controller_1.DECORATOR_KEY.SOCKET_CALLBACK, controllerInstance, methodName);
-        const bodyIndex = Reflect.getMetadata(controller_1.DECORATOR_KEY.SOCKET_BODY, controllerInstance, methodName);
-        const dataIndex = Reflect.getMetadata(controller_1.DECORATOR_KEY.SOCKET_DATA, controllerInstance, methodName);
-        const keyDataIndex = Reflect.getMetadata(controller_1.DECORATOR_KEY.SOCKET_DATA_KEY, controllerInstance, methodName);
-        const socketQueryMeta = Reflect.getMetadata(controller_1.DECORATOR_KEY.SOCKET_QUERY, controllerInstance, methodName) || [];
-        const event = Reflect.getMetadata(controller_1.DECORATOR_KEY.ROUTE_PATH, prototype, methodName);
-        const methodRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
-        const classRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
-        const accessControlRoles = this.resolveAccessControlRoles(methodRoles, classRoles);
-        const guards = this.resolveGuards(prototype, subscribers.instance.constructor, methodName);
-        const args = [];
-        socket.on(event, (data, callback) => __awaiter(this, void 0, void 0, function* () {
-            try {
-                if (accessControlRoles !== undefined) {
-                    const resolvedRoles = yield this.accessControlGuard.resolveRoles({ socket, data });
-                    if (!this.isRoleAllowed(accessControlRoles, resolvedRoles)) {
-                        return callback ? callback(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN)) : undefined;
-                    }
-                }
-                if (guards.length > 0) {
-                    const allowed = yield this.runGuards(guards, { socket, data });
-                    if (!allowed) {
-                        return callback ? callback(new http_error_exception_1.HttpError('Forbidden', http_code_1.HttpStatusCode.FORBIDDEN)) : undefined;
-                    }
-                }
-                if (socketIndex !== undefined)
-                    args[socketIndex] = orderNamespace;
-                if (callBackIndex !== undefined && callback)
-                    args[callBackIndex] = callback;
-                if (dataIndex !== undefined)
-                    args[dataIndex] = keyDataIndex ? socket.data[keyDataIndex] : data;
-                socketQueryMeta.forEach(({ queryKey, queryIndex }) => {
-                    args[queryIndex] = queryKey ? socket.handshake.query[queryKey] : socket.handshake.query;
-                });
-                if (bodyIndex !== undefined) {
-                    const ResBodyType = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUEST_BODY_TYPE, controllerInstance, methodName);
-                    const ResBodyTypeOptions = Reflect.getMetadata(controller_1.DECORATOR_KEY.REQUEST_BODY_OPTIONS, controllerInstance, methodName);
-                    if (ResBodyType) {
-                        const instance = (0, class_transformer_1.plainToInstance)(ResBodyType, data, ResBodyTypeOptions);
-                        const errors = yield (0, class_validator_1.validate)(instance);
-                        if (errors.length > 0) {
-                            const error = new http_error_exception_1.HttpError('Validation Error', http_code_1.HttpStatusCode.FORBIDDEN, errors[0]);
-                            error.stack = JSON.stringify(errors[0]);
-                            return callback(error);
-                        }
-                        args[bodyIndex] = instance;
-                    }
-                    else {
-                        args[bodyIndex] = data;
-                    }
-                }
-                yield subscribers.instance[methodName](...args);
-            }
-            catch (e) {
-                if (callback)
-                    callback(e);
-            }
-        }));
-    }
-    /**
-     * Resolves (or creates) the socket namespace for basePath, registers @AccessControl
-     * pre-checks, and binds connection/event listeners for its subscribers.
-     */
-    registerSocketNamespace(basePath, subscribers, controllerInstance, logger) {
-        return __awaiter(this, void 0, void 0, function* () {
-            const getBusinessId = () => __awaiter(this, void 0, void 0, function* () {
-                if (typeof (subscribers === null || subscribers === void 0 ? void 0 : subscribers.instance["setBusinessId"]) === "function") {
-                    return yield subscribers.instance.setBusinessId();
-                }
-                return null;
-            });
-            const businessId = yield getBusinessId();
-            const socketRoom = businessId !== null ? `${basePath}-${businessId}` : basePath;
-            if (this.options.enableLogging && businessId !== null) {
-                logger.forEach((value) => {
-                    if (value.BasePath === basePath) {
-                        value.BasePath = socketRoom;
-                    }
-                });
-            }
-            const orderNamespace = this.socketServer.of(socketRoom);
-            if (this.options.socketMiddleware)
-                orderNamespace.use(this.options.socketMiddleware);
-            if (!subscribers)
-                return;
-            const subscribersPrototype = Object.getPrototypeOf(subscribers.instance);
-            subscribers.methods.forEach((methodName) => {
-                const methodRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, subscribersPrototype, methodName);
-                const classRoles = Reflect.getMetadata(controller_1.DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
-                const accessControlRoles = this.resolveAccessControlRoles(methodRoles, classRoles);
-                if (accessControlRoles !== undefined) {
-                    this.requireAccessControlGuard(`Socket event "${methodName}"`);
-                }
-            });
-            orderNamespace.on('connection', (socket) => {
-                subscribers.instance['onConnect'](socket);
-                socket.on('disconnect', (reason) => subscribers.instance['onDisconnect'](socket, reason));
-                subscribers.methods.forEach((methodName) => {
-                    this.bindSocketEvent(orderNamespace, socket, controllerInstance, subscribers, methodName);
-                });
-            });
+        logger.push({
+            BasePath: `${routePath}${route_path}`,
+            Event: classMethod.toUpperCase(),
+            ControllerName: ControllerClass.name,
+            ImplementMethod: methodName,
+            Type: "API"
         });
     }
-    registerController(controllers, providers) {
+    registerController(controllers) {
         return __awaiter(this, void 0, void 0, function* () {
-            var _a, _b;
-            const socketEvent = new Map();
+            var _a;
             const logger = [];
-            if (providers) {
-                for (const ProviderClass of providers) {
-                    di_1.container.register(ProviderClass);
-                }
-            }
             for (const ControllerClass of controllers) {
                 const router = (0, express_1.Router)();
                 // Inject providers into the controller constructor
-                const controllerInstance = this.instantiateController(ControllerClass);
+                const controllerInstance = (0, registration_helpers_1.instantiateController)(ControllerClass);
                 const prototype = Object.getPrototypeOf(controllerInstance);
                 const methods = Object.getOwnPropertyNames(prototype);
                 const basePath = Reflect.getMetadata(controller_1.DECORATOR_KEY.CONTROLLER_PATH, ControllerClass);
                 const controllerKey = Reflect.getMetadata(controller_1.DECORATOR_KEY.CONTROLLER, ControllerClass);
-                if (![controller_1.DECORATOR_KEY.CONTROLLER, controller_1.DECORATOR_KEY.SOCKET].includes(controllerKey))
+                if (controllerKey !== controller_1.DECORATOR_KEY.CONTROLLER)
                     continue;
                 if (!basePath) {
                     console.warn(`\x1b[43m [Warning] Controller ${ControllerClass.name} is missing a base path. \x1b[0m`);
                     continue;
-                }
-                if (!socketEvent.has(basePath) && controllerKey === controller_1.DECORATOR_KEY.SOCKET) {
-                    socketEvent.set(basePath, {
-                        instance: controllerInstance,
-                        methods: []
-                    });
-                    if (this.options.enableLogging) {
-                        logger.push({
-                            BasePath: basePath,
-                            Event: "ROOT",
-                            ControllerName: ControllerClass.name,
-                            ImplementMethod: "onConnect",
-                            Type: "SOCKET"
-                        });
-                    }
                 }
                 // Start config Route Api
                 const routePath = ((_a = this.excludePrefix) === null || _a === void 0 ? void 0 : _a.includes(basePath)) ? basePath : this.prefix ? this.prefix + basePath : basePath;
@@ -468,38 +340,16 @@ class CoreApplication {
                     const classMethod = Reflect.getMetadata(controller_1.DECORATOR_KEY.METHOD, prototype, methodName);
                     if (typeof controllerInstance[methodName] !== "function" || !classMethod)
                         continue;
-                    // classMethod "event" is method socket event
-                    if (classMethod !== "event") {
-                        this.registerHttpRoute(router, ControllerClass, controllerInstance, prototype, methodName, classMethod, route_path, routePath, logger);
-                    }
-                    else {
-                        (_b = socketEvent.get(basePath)) === null || _b === void 0 ? void 0 : _b.methods.push(methodName);
-                        if (this.options.enableLogging) {
-                            logger.push({
-                                BasePath: basePath,
-                                Event: route_path,
-                                ControllerName: ControllerClass.name,
-                                ImplementMethod: methodName,
-                                Type: "SOCKET"
-                            });
-                        }
-                    }
+                    if (classMethod === "event")
+                        continue; // @SocketController classes are already filtered out above
+                    this.registerHttpRoute(router, ControllerClass, controllerInstance, prototype, methodName, classMethod, route_path, routePath, logger);
                 }
                 this.server.use(routePath, router);
-                // Start socket namespace
-                if (socketEvent.size > 0) {
-                    yield this.registerSocketNamespace(basePath, socketEvent.get(basePath), controllerInstance, logger);
-                }
             }
             if (this.options.enableLogging)
                 console.table(logger);
+            return logger;
         });
-    }
-    // Helper method to instantiate controllers with injected providers
-    instantiateController(ControllerClass) {
-        const paramTypes = Reflect.getMetadata("design:paramtypes", ControllerClass) || [];
-        const dependencies = paramTypes.map(type => di_1.container.resolve(type) || null);
-        return new ControllerClass(...dependencies);
     }
     /**
      * Configures body parsing options for the Express server.
@@ -574,6 +424,18 @@ class CoreApplication {
             this.server.use(middleware.use);
         });
     }
+    /**
+     * Hands the full registered HTTP route list to any middleware implementing
+     * the optional `setRoutes()` method, once controller registration has
+     * finished and before the server starts listening.
+     */
+    notifyMiddlewareRoutes(routes) {
+        this.middlewares.forEach((middleware) => {
+            if (typeof middleware.setRoutes === "function") {
+                middleware.setRoutes(routes);
+            }
+        });
+    }
     registerResponseInterceptors() {
         if (this.interceptors.length > 0) {
             this.interceptors.forEach((interceptor) => {
@@ -620,16 +482,30 @@ class CoreApplication {
     }
     start(port, callback) {
         return __awaiter(this, void 0, void 0, function* () {
+            if (this.adapter) {
+                if (port !== undefined) {
+                    throw new Error("[CoreApplication] start(port) was called but this app is attached to a shared ServerAdapter (createServer({ adapter })). The adapter owns port binding and automatically starts every attached app when you call adapter.listen(port, callback) — you no longer need to call app.start() yourself, though doing so with no arguments is still harmless.");
+                }
+            }
+            else if (port === undefined) {
+                throw new Error("[CoreApplication] start(port) requires a port when no adapter is attached. Pass a port, or attach a ServerAdapter via createServer({ adapter }) and call adapter.listen(port, callback) instead.");
+            }
+            if (this.started)
+                return;
+            this.started = true;
             this.appContext.start();
             this.applyRequestLogging();
             this.applyCors();
             this.applyRateLimit();
             this.executeMiddleware();
             this.registerResponseInterceptors();
-            yield this.registerController(this.controllerClasses, this.providers);
+            const routes = yield this.registerController(this.controllerClasses);
+            this.notifyMiddlewareRoutes(routes);
             this.applyNotFoundHandler();
             this.catch();
-            this.httpServer.listen(port, callback);
+            if (!this.adapter) {
+                this.httpServer.listen(port, callback);
+            }
         });
     }
 }

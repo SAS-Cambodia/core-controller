@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
-import { Socket, DisconnectReason } from "socket.io";
+import { Socket, DisconnectReason, ExtendedError } from "socket.io";
+import { RouteInfo } from "../type";
 export interface Action {
     request: Request;
     response: Response;
@@ -18,6 +19,11 @@ export interface NotFoundHandler {
 }
 export interface CoreMiddleware {
     use(req: Request, res: Response, next: NextFunction): void;
+    setRoutes?(routes: RouteInfo[]): void;
+}
+export interface CoreSocketMiddleware {
+    use(socket: Socket, next: (err?: ExtendedError) => void): void;
+    setRoutes?(routes: RouteInfo[]): void;
 }
 export interface SocketEventAdapter {
     onConnect(socket: Socket): void;
@@ -32,6 +38,9 @@ export interface AccessControlContext {
 }
 export interface AccessControlGuard {
     resolveRoles(context: AccessControlContext): string[] | Promise<string[]>;
+}
+export interface PlanAccessControlGuard {
+    resolvePlans(context: AccessControlContext): string[] | Promise<string[]>;
 }
 export interface CanActivate {
     canActivate(context: AccessControlContext): boolean | Promise<boolean>;
