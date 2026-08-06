@@ -144,11 +144,23 @@ export class UserDto {
 
 ### Server Configuration
 
-The server is created using `ServerFactory.createServer()` with options:
+HTTP and Socket.IO are two independent, single-responsibility apps — each is created by its own factory method and can run standalone on its own port. To run them together on one shared port, connect them with a `ServerAdapter`.
+
+**HTTP**, via `ServerFactory.createServer()`:
 - `controllers`: Array of controller paths (glob patterns)
 - `providers`: Array of service providers
 - `enableLogging`: Boolean to enable logging
-- `SocketIO`: Socket.IO server class (optional)
+- `adapter`: Optional `ServerAdapter` to share a port with a `SocketApplication`
+
+**Socket.IO**, via `ServerFactory.createSocketServer()`:
+- `controllers`: Array of controller paths (glob patterns)
+- `providers`: Array of service providers
+- `enableLogging`: Boolean to enable logging
+- `SocketIO`: Socket.IO server class (required — keeps `socket.io` out of this library's hard dependencies)
+- `socketOptions`: Socket.IO/Engine.IO server options
+- `adapter`: Optional `ServerAdapter` to share a port with a `CoreApplication`
+
+**Connecting them**, via `ServerFactory.createAdapter()`: create one `ServerAdapter`, pass it to both `createServer({ adapter })` and `createSocketServer({ adapter })`, then call `adapter.listen(port, callback)` once — it automatically calls `.start()` on every app attached to it (registering routes/namespaces) before binding the port, so you don't need to call `.start()` on each app yourself. Used standalone (no `adapter`), each app's `.start(port, callback)` registers and listens in one call, exactly as before.
 
 ### Middleware
 
@@ -157,10 +169,25 @@ Middleware can be added globally:
 app.useGlobalMiddleware(Middleware)
 ```
 
-Middleware can optionally implement `setRoutes(routes: RouteInfo[])` to receive the full list of registered routes (HTTP API + Socket.IO events) once controller registration completes, before the server starts listening:
+Middleware can optionally implement `setRoutes(routes: RouteInfo[])` to receive the full list of registered routes once controller registration completes, before the server starts listening:
 ```typescript
 class Middleware implements CoreMiddleware {
     use(req: Request, res: Response, next: NextFunction): void {
+        next();
+    }
+    setRoutes(routes: RouteInfo[]): void {
+        console.log(routes);
+    }
+}
+```
+
+Socket middleware follows the same pattern, via `CoreSocketMiddleware` and `SocketApplication.useGlobalMiddleware()`:
+```typescript
+socketApp.useGlobalMiddleware(SocketAuthMiddleware);
+```
+```typescript
+class SocketAuthMiddleware implements CoreSocketMiddleware {
+    use(socket: Socket, next: (err?: ExtendedError) => void): void {
         next();
     }
     setRoutes(routes: RouteInfo[]): void {
@@ -210,7 +237,7 @@ app.useAccessControl(DemoAccessControlGuard);
 adminOnly() { /* ... */ }
 ```
 
-**Plan-based**, via `@RequirePlan(...plans)` + a `PlanAccessControlGuard` that resolves the caller's subscription plan — for gating features behind a subscription tier. A plan usually belongs to the account/tenant (e.g. a POS store), not the individual end user, so it's typically resolved from an auth token/API key rather than a per-request header — see `example/guards/plan-access-control-guard.ts` (`PosPlanAccessControlGuard`) for a JWT-based implementation: the store's plan is embedded in its auth token (`Authorization: Bearer <token>` for HTTP, `socket.handshake.auth.token` for sockets, decoded once into `socket.data.plan` by `socketMiddleware`), and `example/controllers/pos/` shows gating a reports/multi-store feature set behind it (mint a demo token via `POST /api/v1/auth/token`).
+**Plan-based**, via `@RequirePlan(...plans)` + a `PlanAccessControlGuard` that resolves the caller's subscription plan — for gating features behind a subscription tier. A plan usually belongs to the account/tenant (e.g. a POS store), not the individual end user, so it's typically resolved from an auth token/API key rather than a per-request header — see `example/guards/plan-access-control-guard.ts` (`PosPlanAccessControlGuard`) for a JWT-based implementation: the store's plan is embedded in its auth token (`Authorization: Bearer <token>` for HTTP, `socket.handshake.auth.token` for sockets, decoded once into `socket.data.plan` by a `CoreSocketMiddleware` registered via `socketApp.useGlobalMiddleware(...)`), and `example/controllers/pos/` shows gating a reports/multi-store feature set behind it (mint a demo token via `POST /api/v1/auth/token`).
 ```typescript
 class DemoPlanAccessControlGuard implements PlanAccessControlGuard {
     resolvePlans(context: AccessControlContext): string[] {
@@ -254,6 +281,7 @@ import path from "path";
 import {
 	Action,
 	Context,
+	CoreSocketMiddleware,
 	ErrorInterceptor,
 	Injectable,
 	Interceptor,
@@ -266,7 +294,7 @@ import {
 import dotenv from "dotenv";
 
 dotenv.config();
-import { Server } from "socket.io";
+import { Server, Socket, ExtendedError } from "socket.io";
 import {
 	NextFunction,
 	Request,
@@ -349,6 +377,15 @@ class Middleware implements CoreMiddleware {
 	}
 }
 
+@Injectable()
+class SocketAuthMiddleware implements CoreSocketMiddleware {
+	use(socket: Socket, next: (err?: ExtendedError) => void): void {
+		next();
+	}
+}
+
+const adapter = ServerFactory.createAdapter();
+
 const app = ServerFactory.createServer({
 	controllers: [
 		path.join(__dirname, './controllers/**/*.{js,ts}')
@@ -357,19 +394,26 @@ const app = ServerFactory.createServer({
 		Service,
 	],
 	enableLogging: true,
+	adapter
+});
+
+// Same glob as the HTTP app — registerController on each side filters to
+// what it understands (@Controller vs @SocketController), so reusing it is safe.
+const socketApp = ServerFactory.createSocketServer({
+	controllers: [
+		path.join(__dirname, './controllers/**/*.{js,ts}')
+	],
+	enableLogging: true,
 	SocketIO: Server,
-	socketMiddleware: (socket, next) => {
-		next();
-	},
-	socketOptions: {
-		cors: {
-			origin: "*"
-		}
-	}
+	adapter
 });
 
 app.enableCors({
 	credentials: true,
+	origin: '*'
+});
+
+socketApp.enableCors({
 	origin: '*'
 });
 
@@ -393,8 +437,27 @@ app.useGlobalInterceptors(
 );
 app.useNotFoundHandler(NotFoundInterceptor);
 
+socketApp.useGlobalMiddleware(SocketAuthMiddleware);
+
 const PORT = 3100;
-app.start(PORT, () => {
-	console.log(`🚀 Server running at http://localhost:${PORT}`);
+
+async function bootstrap() {
+	// adapter.listen() automatically starts every app attached to it
+	// (app, socketApp) before binding the port — no manual .start() calls needed.
+	await adapter.listen(PORT, () => {
+		console.log(`🚀 Server running at http://localhost:${PORT}`);
+	});
+}
+
+bootstrap();
+```
+
+To run either app standalone on its own port (no adapter), just call `.start(port, callback)` directly on it — e.g. a Socket.IO-only process with no Express app at all:
+```typescript
+const socketApp = ServerFactory.createSocketServer({
+	controllers: [path.join(__dirname, './controllers/socket.controller.ts')],
+	enableLogging: true,
+	SocketIO: Server
 });
+socketApp.start(4000, () => console.log('Socket server running on 4000'));
 ```

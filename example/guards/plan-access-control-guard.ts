@@ -6,8 +6,9 @@ import { extractBearerToken, verifyPosToken } from "./pos-jwt";
 // auth token rather than a per-user role. HTTP requests carry it as
 // `Authorization: Bearer <token>`; sockets carry it via
 // `socket.handshake.auth.token`, decoded once into `socket.data.plan` by the
-// socketMiddleware in app.ts (see ServerFactory.createServer options) so it
-// doesn't need re-verifying on every event.
+// SocketAuthMiddleware registered on socketApp in app.ts (see
+// socketApp.useGlobalMiddleware(SocketAuthMiddleware)) so it doesn't need
+// re-verifying on every event.
 export class PosPlanAccessControlGuard implements PlanAccessControlGuard {
 	resolvePlans(context: AccessControlContext): string[] {
 		if (context.request) {

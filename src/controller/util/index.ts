@@ -1,6 +1,6 @@
 import path from 'path';
 import {DECORATOR_KEY} from "../constant/decorator-key";
-import {CoreMiddleware, ErrorInterceptor, Interceptor} from "../../interface";
+import {CoreMiddleware, CoreSocketMiddleware, ErrorInterceptor, Interceptor} from "../../interface";
 import {NextFunction, Request, Response} from "express";
 import {plainToInstance} from "class-transformer";
 import {validate} from "class-validator";
@@ -67,6 +67,10 @@ export function isInterceptorError(obj: ErrorInterceptor): obj is ErrorIntercept
 }
 
 export function isMiddleware(obj: CoreMiddleware): obj is CoreMiddleware {
+	return typeof obj.use === 'function';
+}
+
+export function isSocketMiddleware(obj: CoreSocketMiddleware): obj is CoreSocketMiddleware {
 	return typeof obj.use === 'function';
 }
 

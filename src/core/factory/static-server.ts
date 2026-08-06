@@ -1,4 +1,5 @@
 import express, {
+	Express,
 	NextFunction,
 	Request,
 	Response,
@@ -30,24 +31,40 @@ import http,{
 	Server as HttpServer,
 	ServerResponse
 } from "http";
-import { Server as ServerSK, Socket } from "socket.io"
-import { plainToInstance } from "class-transformer";
 import { Options as RateOptions } from "express-rate-limit";
-import { validate } from "class-validator";
 import { HttpError } from "../../http-error-exception";
-import { AccessControlContext, AccessControlGuard, CanActivate, CoreMiddleware, ErrorInterceptor, Interceptor, NotFoundHandler, PlanAccessControlGuard } from "../../interface";
-import {ProviderTarget, RouteInfo, SocketCallBack} from "../../type";
+import { AccessControlGuard, CoreMiddleware, ErrorInterceptor, Interceptor, NotFoundHandler, PlanAccessControlGuard } from "../../interface";
+import { ProviderTarget, RouteInfo } from "../../type";
 import { HttpStatusCode } from "../../enums/http-code";
 import { container } from "../../di";
+import { ServerAdapter } from "./server-adapter";
+import {
+	hasRequiredMatch,
+	instantiateController,
+	registerProviders,
+	requireAccessControlGuard,
+	requirePlanGuard,
+	resolveAccessControlRoles,
+	resolveGuards,
+	resolvePlanRequirement,
+	runGuards
+} from "./shared/registration-helpers";
 
 export class CoreApplication {
-	
-	public server;
+
+	/**
+	 * The underlying Express application. Constructed synchronously in the
+	 * constructor, so it's available immediately after createServer() returns —
+	 * use it as an escape hatch to call any native Express API directly
+	 * (app.server.set(...), app.server.enable(...), app.server.disable(...),
+	 * app.server.locals, mounting extra routes/middleware not covered by this
+	 * library's own methods, etc.).
+	 */
+	public server: Express;
 	private corsOptions: CorsOptions | CorsOptionsDelegate = {};
 	private interceptors: Interceptor[] = [];
 	private interceptorError: ErrorInterceptor[] = [];
 	private notFoundHandler?: NotFoundHandler;
-	private socketServer: ServerSK;
 	private rateLimitOptions?: Partial<RateOptions>;
 	private defaultErrorStatusCode?: number;
 	private requestLoggingEnabled = false;
@@ -56,28 +73,36 @@ export class CoreApplication {
 	private planGuard?: PlanAccessControlGuard;
 	private prefix?: string;
 	private excludePrefix?: string[] = [];
+	private readonly adapter?: ServerAdapter;
 	private readonly controllerClasses: Function[];
 	private readonly httpServer: HttpServer<typeof IncomingMessage, typeof ServerResponse>;
-	private readonly providers?: Function[];
 	private readonly appContext: AppContext;
-	
+	private started = false;
+
 	constructor(private options: serverOptions) {
 		const {
-			SocketIO,
-			socketOptions,
 			providers,
-			controllers
+			controllers,
+			adapter
 		} = this.options;
 		this.controllerClasses = prepareController(controllers);
 		this.server = express();
-		this.providers = providers;
 		this.appContext = new AppContext();
-		this.httpServer = http.createServer(this.server);
-		if (SocketIO) {
-			this.socketServer = new SocketIO(this.httpServer, socketOptions);
+		this.adapter = adapter;
+		// Registered immediately (not deferred to start()) so a provider declared
+		// here is resolvable by any other app sharing the same adapter regardless
+		// of which app's start() runs first — the DI container is a process-wide
+		// singleton, so this is effectively whole-app provider sharing.
+		registerProviders(providers);
+		if (adapter) {
+			adapter.attachRequestHandler(this.server);
+			this.httpServer = adapter.getHttpServer();
+			adapter.attach(this);
+		} else {
+			this.httpServer = http.createServer(this.server);
 		}
 	}
-	
+
 	/**
 	 * Registers global middleware functions to be used by the application.
 	 * Each middleware is instantiated and added to the middleware stack if it meets the criteria.
@@ -93,7 +118,7 @@ export class CoreApplication {
 			}
 		});
 	}
-	
+
 	/**
 	 * Registers the role-resolution guard used to enforce @AccessControl().
 	 * The guard is instantiated directly (not resolved via the DI container),
@@ -134,7 +159,7 @@ export class CoreApplication {
 	public get<T>(target: ProviderTarget<T>): T{
 		return container.resolve<T>(target);
 	}
-	
+
 	/**
 	 * Enables Cross-Origin Resource Sharing (CORS) for the server using the specified options.
 	 *
@@ -165,7 +190,7 @@ export class CoreApplication {
 		this.prefix = prefix;
 		this.excludePrefix = excludePrefix;
 	}
-	
+
 	/**
 	 * Registers global interceptors for the application: response interceptors
 	 * (classes implementing `Interceptor`, tagged with `@ResponseInterceptor()`,
@@ -209,63 +234,13 @@ export class CoreApplication {
 	public useNotFoundHandler(handler: new (...args: any[]) => NotFoundHandler): void {
 		this.notFoundHandler = new handler();
 	}
-	
-	/**
-	 * Resolves the effective @AccessControl role list for a method, falling back
-	 * to the class-level roles when the method itself isn't annotated.
-	 */
-	private resolveAccessControlRoles(methodRoles?: string[], classRoles?: string[]): string[] | undefined {
-		return methodRoles !== undefined ? methodRoles : classRoles;
-	}
-
-	/**
-	 * Resolves the effective @RequirePlan list for a method, falling back
-	 * to the class-level plans when the method itself isn't annotated —
-	 * same fallback semantics as resolveAccessControlRoles.
-	 */
-	private resolvePlanRequirement(methodPlans?: string[], classPlans?: string[]): string[] | undefined {
-		return methodPlans !== undefined ? methodPlans : classPlans;
-	}
-
-	/**
-	 * Set-membership check shared by @AccessControl and @RequirePlan: an empty
-	 * requirement list just means "must resolve to something", otherwise the
-	 * resolved list must intersect the required list.
-	 */
-	private hasRequiredMatch(required: string[], resolved: string[]): boolean {
-		return required.length === 0
-			? resolved.length > 0
-			: resolved.some((value) => required.includes(value));
-	}
-
-	/**
-	 * Returns the registered AccessControlGuard or throws, since guarded routes/events
-	 * are only valid once useAccessControl() has been called.
-	 */
-	private requireAccessControlGuard(label: string): AccessControlGuard {
-		if (!this.accessControlGuard) {
-			throw new Error(`[AccessControl] ${label} requires @AccessControl but no guard was registered. Call app.useAccessControl(YourGuard) before app.start().`);
-		}
-		return this.accessControlGuard;
-	}
-
-	/**
-	 * Returns the registered PlanAccessControlGuard or throws, since @RequirePlan-guarded
-	 * routes/events are only valid once usePlanAccessControl() has been called.
-	 */
-	private requirePlanGuard(label: string): PlanAccessControlGuard {
-		if (!this.planGuard) {
-			throw new Error(`[RequirePlan] ${label} requires @RequirePlan but no guard was registered. Call app.usePlanAccessControl(YourGuard) before app.start().`);
-		}
-		return this.planGuard;
-	}
 
 	private buildHttpAccessControlMiddleware(accessControlRoles: string[], label: string) {
-		const guard = this.requireAccessControlGuard(label);
+		const guard = requireAccessControlGuard(this.accessControlGuard, label);
 		return async (request: Request, response: Response, next: NextFunction) => {
 			try {
 				const resolvedRoles = await guard.resolveRoles({ request, response });
-				if (!this.hasRequiredMatch(accessControlRoles, resolvedRoles)) {
+				if (!hasRequiredMatch(accessControlRoles, resolvedRoles)) {
 					return next(new HttpError('Forbidden', HttpStatusCode.FORBIDDEN));
 				}
 				next();
@@ -276,11 +251,11 @@ export class CoreApplication {
 	}
 
 	private buildHttpPlanMiddleware(requiredPlans: string[], label: string) {
-		const guard = this.requirePlanGuard(label);
+		const guard = requirePlanGuard(this.planGuard, label);
 		return async (request: Request, response: Response, next: NextFunction) => {
 			try {
 				const resolvedPlans = await guard.resolvePlans({ request, response });
-				if (!this.hasRequiredMatch(requiredPlans, resolvedPlans)) {
+				if (!hasRequiredMatch(requiredPlans, resolvedPlans)) {
 					return next(new HttpError('Forbidden', HttpStatusCode.FORBIDDEN));
 				}
 				next();
@@ -288,23 +263,6 @@ export class CoreApplication {
 				next(e);
 			}
 		};
-	}
-
-	/**
-	 * Collects @UseGuards() guards from class + method level (both run, unlike
-	 * @AccessControl's method-overrides-class semantics) and instantiates them.
-	 */
-	private resolveGuards(prototype: any, ctor: any, methodName: string): CanActivate[] {
-		const classGuards = Reflect.getMetadata(DECORATOR_KEY.GUARDS, ctor) || [];
-		const methodGuards = Reflect.getMetadata(DECORATOR_KEY.GUARDS, prototype, methodName) || [];
-		return [...classGuards, ...methodGuards].map((GuardClass: any) => new GuardClass());
-	}
-
-	private async runGuards(guards: CanActivate[], context: AccessControlContext): Promise<boolean> {
-		for (const guard of guards) {
-			if (!(await guard.canActivate(context))) return false;
-		}
-		return true;
 	}
 
 	private buildFileUploadMiddleware(fileUpload: { options: FileUpload }) {
@@ -365,7 +323,7 @@ export class CoreApplication {
 
 		const methodRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
 		const classRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, ControllerClass);
-		const accessControlRoles = this.resolveAccessControlRoles(methodRoles, classRoles);
+		const accessControlRoles = resolveAccessControlRoles(methodRoles, classRoles);
 
 		if (accessControlRoles !== undefined) {
 			args.push(this.buildHttpAccessControlMiddleware(accessControlRoles, `${ControllerClass.name}.${methodName}`));
@@ -373,17 +331,17 @@ export class CoreApplication {
 
 		const methodPlans = Reflect.getMetadata(DECORATOR_KEY.REQUIRE_PLAN, prototype, methodName);
 		const classPlans = Reflect.getMetadata(DECORATOR_KEY.REQUIRE_PLAN, ControllerClass);
-		const requiredPlans = this.resolvePlanRequirement(methodPlans, classPlans);
+		const requiredPlans = resolvePlanRequirement(methodPlans, classPlans);
 
 		if (requiredPlans !== undefined) {
 			args.push(this.buildHttpPlanMiddleware(requiredPlans, `${ControllerClass.name}.${methodName}`));
 		}
 
-		const guards = this.resolveGuards(prototype, ControllerClass, methodName);
+		const guards = resolveGuards(prototype, ControllerClass, methodName);
 		if (guards.length > 0) {
 			args.push(async (request: Request, response: Response, next: NextFunction) => {
 				try {
-					const allowed = await this.runGuards(guards, { request, response });
+					const allowed = await runGuards(guards, { request, response });
 					if (!allowed) {
 						return next(new HttpError('Forbidden', HttpStatusCode.FORBIDDEN));
 					}
@@ -411,180 +369,25 @@ export class CoreApplication {
 		});
 	}
 
-	/**
-	 * Marshals args (@SocketInstance/@SocketCallback/@SocketData/@SocketBody), enforces
-	 * @AccessControl, validates @SocketBody, and binds a single socket event listener.
-	 */
-	private bindSocketEvent(
-		orderNamespace: any,
-		socket: Socket,
-		controllerInstance: any,
-		subscribers: { instance: any, methods: string[] },
-		methodName: string
-	) {
-		const prototype = Object.getPrototypeOf(subscribers.instance);
-		const socketIndex = Reflect.getMetadata(DECORATOR_KEY.SOCKET_INSTANCE, controllerInstance, methodName);
-		const callBackIndex = Reflect.getMetadata(DECORATOR_KEY.SOCKET_CALLBACK, controllerInstance, methodName);
-		const bodyIndex = Reflect.getMetadata(DECORATOR_KEY.SOCKET_BODY, controllerInstance, methodName);
-		const dataIndex = Reflect.getMetadata(DECORATOR_KEY.SOCKET_DATA, controllerInstance, methodName);
-		const keyDataIndex = Reflect.getMetadata(DECORATOR_KEY.SOCKET_DATA_KEY, controllerInstance, methodName);
-		const socketQueryMeta = Reflect.getMetadata(DECORATOR_KEY.SOCKET_QUERY, controllerInstance, methodName) || [];
-		const event = Reflect.getMetadata(DECORATOR_KEY.ROUTE_PATH, prototype, methodName);
-		const methodRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, prototype, methodName);
-		const classRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
-		const accessControlRoles = this.resolveAccessControlRoles(methodRoles, classRoles);
-		const methodPlans = Reflect.getMetadata(DECORATOR_KEY.REQUIRE_PLAN, prototype, methodName);
-		const classPlans = Reflect.getMetadata(DECORATOR_KEY.REQUIRE_PLAN, subscribers.instance.constructor);
-		const requiredPlans = this.resolvePlanRequirement(methodPlans, classPlans);
-		const guards = this.resolveGuards(prototype, subscribers.instance.constructor, methodName);
-		const args: any[] = [];
-
-		socket.on(event, async <T>(data: T, callback: SocketCallBack) => {
-			try {
-				if (accessControlRoles !== undefined) {
-					const resolvedRoles = await this.accessControlGuard!.resolveRoles({ socket, data });
-					if (!this.hasRequiredMatch(accessControlRoles, resolvedRoles)) {
-						return callback ? callback(new HttpError('Forbidden', HttpStatusCode.FORBIDDEN)) : undefined;
-					}
-				}
-				if (requiredPlans !== undefined) {
-					const resolvedPlans = await this.planGuard!.resolvePlans({ socket, data });
-					if (!this.hasRequiredMatch(requiredPlans, resolvedPlans)) {
-						return callback ? callback(new HttpError('Forbidden', HttpStatusCode.FORBIDDEN)) : undefined;
-					}
-				}
-				if (guards.length > 0) {
-					const allowed = await this.runGuards(guards, { socket, data });
-					if (!allowed) {
-						return callback ? callback(new HttpError('Forbidden', HttpStatusCode.FORBIDDEN)) : undefined;
-					}
-				}
-				if (socketIndex !== undefined) args[socketIndex] = orderNamespace;
-				if (callBackIndex !== undefined && callback) args[callBackIndex] = callback;
-				if (dataIndex !== undefined) args[dataIndex] = keyDataIndex ? socket.data[keyDataIndex] : data;
-				socketQueryMeta.forEach(({queryKey, queryIndex}: { queryKey?: string, queryIndex: number }) => {
-					args[queryIndex] = queryKey ? socket.handshake.query[queryKey] : socket.handshake.query;
-				});
-				if (bodyIndex !== undefined) {
-					const ResBodyType = Reflect.getMetadata(DECORATOR_KEY.REQUEST_BODY_TYPE, controllerInstance, methodName);
-					const ResBodyTypeOptions = Reflect.getMetadata(DECORATOR_KEY.REQUEST_BODY_OPTIONS, controllerInstance, methodName);
-					if (ResBodyType) {
-						const instance: any = plainToInstance(ResBodyType, data, ResBodyTypeOptions);
-						const errors = await validate(instance);
-						if (errors.length > 0) {
-							const error = new HttpError('Validation Error', HttpStatusCode.FORBIDDEN, errors[0]);
-							error.stack = JSON.stringify(errors[0]);
-							return callback(error);
-						}
-						args[bodyIndex] = instance;
-					} else {
-						args[bodyIndex] = data;
-					}
-				}
-				await subscribers.instance[methodName](...args);
-			} catch (e) {
-				if (callback) callback(e);
-			}
-		});
-	}
-
-	/**
-	 * Resolves (or creates) the socket namespace for basePath, registers @AccessControl
-	 * pre-checks, and binds connection/event listeners for its subscribers.
-	 */
-	private async registerSocketNamespace(
-		basePath: string,
-		subscribers: { instance: any, methods: string[] } | undefined,
-		controllerInstance: any,
-		logger: RouteInfo[]
-	) {
-		const getBusinessId = async () => {
-			if (typeof subscribers?.instance["setBusinessId"] === "function") {
-				return await subscribers.instance.setBusinessId();
-			}
-			return null;
-		};
-		const businessId = await getBusinessId();
-		const socketRoom = businessId !== null ? `${basePath}-${businessId}` : basePath;
-
-		if (businessId !== null) {
-			logger.forEach((value) => {
-				if (value.BasePath === basePath) {
-					value.BasePath = socketRoom;
-				}
-			});
-		}
-
-		const orderNamespace = this.socketServer.of(socketRoom);
-		if (this.options.socketMiddleware) orderNamespace.use(this.options.socketMiddleware);
-		if (!subscribers) return;
-
-		const subscribersPrototype = Object.getPrototypeOf(subscribers.instance);
-		subscribers.methods.forEach((methodName) => {
-			const methodRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, subscribersPrototype, methodName);
-			const classRoles = Reflect.getMetadata(DECORATOR_KEY.ACCESS_CONTROL, subscribers.instance.constructor);
-			const accessControlRoles = this.resolveAccessControlRoles(methodRoles, classRoles);
-			if (accessControlRoles !== undefined) {
-				this.requireAccessControlGuard(`Socket event "${methodName}"`);
-			}
-
-			const methodPlans = Reflect.getMetadata(DECORATOR_KEY.REQUIRE_PLAN, subscribersPrototype, methodName);
-			const classPlans = Reflect.getMetadata(DECORATOR_KEY.REQUIRE_PLAN, subscribers.instance.constructor);
-			const requiredPlans = this.resolvePlanRequirement(methodPlans, classPlans);
-			if (requiredPlans !== undefined) {
-				this.requirePlanGuard(`Socket event "${methodName}"`);
-			}
-		});
-
-		orderNamespace.on('connection', (socket: Socket) => {
-			subscribers.instance['onConnect'](socket);
-			socket.on('disconnect', (reason) => subscribers.instance['onDisconnect'](socket, reason));
-			subscribers.methods.forEach((methodName) => {
-				this.bindSocketEvent(orderNamespace, socket, controllerInstance, subscribers, methodName);
-			});
-		});
-	}
-
-	private async registerController(controllers: any[], providers: Function[] | undefined): Promise<RouteInfo[]> {
-		const socketEvent = new Map<string, { instance: any, methods: string[] }>();
+	private async registerController(controllers: any[]): Promise<RouteInfo[]> {
 		const logger: RouteInfo[] = [];
-
-		if (providers) {
-			for (const ProviderClass of providers) {
-				container.register(ProviderClass as any)
-			}
-		}
 
 		for (const ControllerClass of controllers) {
 			const router = Router();
 			// Inject providers into the controller constructor
-			const controllerInstance = this.instantiateController(ControllerClass);
+			const controllerInstance = instantiateController(ControllerClass);
 			const prototype = Object.getPrototypeOf(controllerInstance);
 			const methods = Object.getOwnPropertyNames(prototype);
 			const basePath = Reflect.getMetadata(DECORATOR_KEY.CONTROLLER_PATH, ControllerClass);
 			const controllerKey = Reflect.getMetadata(DECORATOR_KEY.CONTROLLER, ControllerClass);
 
-			if (![DECORATOR_KEY.CONTROLLER, DECORATOR_KEY.SOCKET].includes(controllerKey)) continue;
+			if (controllerKey !== DECORATOR_KEY.CONTROLLER) continue;
 
 			if (!basePath) {
 				console.warn(`\x1b[43m [Warning] Controller ${ControllerClass.name} is missing a base path. \x1b[0m`);
 				continue;
 			}
 
-			if (!socketEvent.has(basePath) && controllerKey === DECORATOR_KEY.SOCKET) {
-				socketEvent.set(basePath, {
-					instance: controllerInstance,
-					methods: []
-				});
-
-				logger.push({
-					BasePath: basePath,
-					Event: "ROOT",
-					ControllerName: ControllerClass.name,
-					ImplementMethod: "onConnect",
-					Type: "SOCKET"
-				});
-			}
 			// Start config Route Api
 			const routePath = this.excludePrefix?.includes(basePath) ? basePath : this.prefix ? this.prefix + basePath : basePath;
 
@@ -594,27 +397,12 @@ export class CoreApplication {
 				const classMethod = Reflect.getMetadata(DECORATOR_KEY.METHOD, prototype, methodName);
 
 				if (typeof controllerInstance[methodName] !== "function" || !classMethod) continue;
+				if (classMethod === "event") continue; // @SocketController classes are already filtered out above
 
-				// classMethod "event" is method socket event
-				if (classMethod !== "event") {
-					this.registerHttpRoute(router, ControllerClass, controllerInstance, prototype, methodName, classMethod, route_path, routePath, logger);
-				} else {
-					socketEvent.get(basePath)?.methods.push(methodName);
-					logger.push({
-						BasePath: basePath,
-						Event: route_path,
-						ControllerName: ControllerClass.name,
-						ImplementMethod: methodName,
-						Type: "SOCKET"
-					})
-				}
+				this.registerHttpRoute(router, ControllerClass, controllerInstance, prototype, methodName, classMethod, route_path, routePath, logger);
 			}
 
 			this.server.use(routePath, router);
-			// Start socket namespace
-			if (socketEvent.size > 0) {
-				await this.registerSocketNamespace(basePath, socketEvent.get(basePath), controllerInstance, logger);
-			}
 		}
 
 		if (this.options.enableLogging) console.table(logger);
@@ -622,13 +410,6 @@ export class CoreApplication {
 		return logger;
 	}
 
-	// Helper method to instantiate controllers with injected providers
-	private instantiateController(ControllerClass: any) {
-		const paramTypes: any[] = Reflect.getMetadata("design:paramtypes", ControllerClass) || [];
-		const dependencies = paramTypes.map(type => container.resolve(type) || null);
-		return new ControllerClass(...dependencies);
-	}
-	
 	/**
 	 * Configures body parsing options for the Express server.
 	 * This method sets up middleware to parse incoming request bodies based on the provided options.
@@ -657,7 +438,7 @@ export class CoreApplication {
 		for (let key in options) config = bodyParser[key](options[key]);
 		if(config) this.server.use(config);
 	}
-	
+
 	/**
 	 * Sets the rate limit configuration for the instance.
 	 *
@@ -711,9 +492,9 @@ export class CoreApplication {
 	}
 
 	/**
-	 * Hands the full registered route list (HTTP API + Socket.IO events) to any
-	 * middleware implementing the optional `setRoutes()` method, once controller
-	 * registration has finished and before the server starts listening.
+	 * Hands the full registered HTTP route list to any middleware implementing
+	 * the optional `setRoutes()` method, once controller registration has
+	 * finished and before the server starts listening.
 	 */
 	private notifyMiddlewareRoutes(routes: RouteInfo[]): void {
 		this.middlewares.forEach((middleware) => {
@@ -780,17 +561,33 @@ export class CoreApplication {
 		})
 	}
 
-	public async start(port: number | string, callback: () => void) {
+	public async start(): Promise<void>;
+	public async start(port: number | string, callback?: () => void): Promise<void>;
+	public async start(port?: number | string, callback?: () => void): Promise<void> {
+		if (this.adapter) {
+			if (port !== undefined) {
+				throw new Error("[CoreApplication] start(port) was called but this app is attached to a shared ServerAdapter (createServer({ adapter })). The adapter owns port binding and automatically starts every attached app when you call adapter.listen(port, callback) — you no longer need to call app.start() yourself, though doing so with no arguments is still harmless.");
+			}
+		} else if (port === undefined) {
+			throw new Error("[CoreApplication] start(port) requires a port when no adapter is attached. Pass a port, or attach a ServerAdapter via createServer({ adapter }) and call adapter.listen(port, callback) instead.");
+		}
+
+		if (this.started) return;
+		this.started = true;
+
 		this.appContext.start();
 		this.applyRequestLogging();
 		this.applyCors();
 		this.applyRateLimit();
 		this.executeMiddleware();
 		this.registerResponseInterceptors();
-		const routes = await this.registerController(this.controllerClasses, this.providers);
+		const routes = await this.registerController(this.controllerClasses);
 		this.notifyMiddlewareRoutes(routes);
 		this.applyNotFoundHandler();
 		this.catch();
-		this.httpServer.listen(port, callback);
+
+		if (!this.adapter) {
+			this.httpServer.listen(port!, callback);
+		}
 	}
 }
