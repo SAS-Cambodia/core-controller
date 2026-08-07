@@ -1,24 +1,30 @@
 {
   "private": true,
   "name": "core-controller",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "Core library",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build:prod": "tsc --project tsconfig.prod.json",
     "prepare": "npm run build:prod",
     "dev": "concurrently \"npx tsc --watch --project tsconfig.dev.json\" \"nodemon\"",
+    "dev:cluster": "ts-node ./example/cluster.ts",
     "test": "ts-node test/simple-test.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-s3": "^3.738.0",
     "@aws-sdk/lib-storage": "^3.738.0",
+    "@socket.io/cluster-adapter": "^0.3.0",
+    "@socket.io/sticky": "^2.0.1",
     "@types/aws-sdk": "^0.0.42",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^1.4.12",
     "@types/node": "^22.13.0",
     "aws-sdk": "^2.1692.0",
@@ -32,7 +38,6 @@
     "firebase-admin": "^13.2.0",
     "glob": "^11.0.1",
     "jsonwebtoken": "^9.0.3",
-    "@types/jsonwebtoken": "^9.0.10",
     "multer": "^1.4.5-lts.1",
     "nodemon": "^3.1.9",
     "reflect-metadata": "^0.2.2",

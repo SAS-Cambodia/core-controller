@@ -124,75 +124,87 @@ class SocketAuthMiddleware implements CoreSocketMiddleware {
 	}
 }
 
-const adapter= FactoryController.createAdapter();
+export const PORT = 3100;
 
-const app= FactoryController.createServer({
-	controllers: [
-		path.join(__dirname, './controllers/**/*.{js,ts}')
-	],
-	providers: [
-		Service,
-	],
-	enableLogging: true,
-	adapter
-});
+/**
+ * Wires up the adapter/app/socketApp (controllers, middleware, interceptors,
+ * guards) without binding a port. Shared by app.ts (single-process dev
+ * server, which finishes bootstrapping via adapter.listen()) and cluster.ts
+ * (each worker calls this, then hands port ownership to @socket.io/sticky
+ * instead of listening directly — see cluster.ts for why).
+ */
+export function buildApp() {
+	const adapter = FactoryController.createAdapter();
 
-// Same glob as the HTTP app — registerController on each side filters to
-// what it understands (@Controller vs @SocketController), so reusing it is safe.
-const socketApp = FactoryController.createSocketServer({
-	controllers: [
-		path.join(__dirname, './controllers/**/*.{js,ts}')
-	],
-	enableLogging: true,
-	SocketIO: Server,
-	adapter
-});
+	const app = FactoryController.createServer({
+		controllers: [
+			path.join(__dirname, './controllers/**/*.{js,ts}')
+		],
+		providers: [
+			Service,
+		],
+		enableLogging: true,
+		adapter
+	});
 
-app.enableCors({
-	credentials: true,
-	origin: '*'
-});
+	// Same glob as the HTTP app — registerController on each side filters to
+	// what it understands (@Controller vs @SocketController), so reusing it is safe.
+	const socketApp = FactoryController.createSocketServer({
+		controllers: [
+			path.join(__dirname, './controllers/**/*.{js,ts}')
+		],
+		enableLogging: true,
+		SocketIO: Server,
+		adapter
+	});
 
-app.enableRequestLogging();
+	app.enableCors({
+		credentials: true,
+		origin: '*'
+	});
 
-app.setRateLimit({
-	windowMs: 15 * 60 * 1000, // 15 minutes
-	limit: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes).
-	standardHeaders: 'draft-8', // draft-6: `RateLimit-*` headers; draft-7 & draft-8: combined `RateLimit` header
-	legacyHeaders: false, // Disable the `X-RateLimit-*` headers.
-})
+	app.enableRequestLogging();
 
-app.setBodyParserOptions({
-	urlencoded: {
-		extended: false
-	}
-});
-app.useGlobalMiddleware(Middleware)
-app.useAccessControl(DemoAccessControlGuard);
-app.usePlanAccessControl(PosPlanAccessControlGuard);
-app.setGlobalPrefix('/api/v1');
-// Business-code errors thrown with `bodyOnly: true` (see RoleController.insufficientBalance)
-// respond with this HTTP status; the real code stays in the body.
-app.setDefaultErrorStatusCode(HttpStatusCode.OK);
-app.useGlobalInterceptors(
-	ResponseTransformerInterceptor,
-	GlobalErrorInterceptor
-);
-app.useNotFoundHandler(NotFoundInterceptor);
-socketApp.enableCors({
-	origin: "*"
-});
-socketApp.useGlobalMiddleware(SocketAuthMiddleware);
+	app.setRateLimit({
+		windowMs: 15 * 60 * 1000, // 15 minutes
+		limit: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes).
+		standardHeaders: 'draft-8', // draft-6: `RateLimit-*` headers; draft-7 & draft-8: combined `RateLimit` header
+		legacyHeaders: false, // Disable the `X-RateLimit-*` headers.
+	})
 
-// UserSocketController ('/waiter') uses no @AccessControl/@RequirePlan today, so
-// socketApp doesn't need useAccessControl/usePlanAccessControl calls to boot; if a
-// future @SocketController event adds those decorators, register the matching
-// guard(s) on socketApp explicitly — guard state isn't shared between app and
-// socketApp even though they're attached to the same adapter/port.
+	app.setBodyParserOptions({
+		urlencoded: {
+			extended: false
+		}
+	});
+	app.useGlobalMiddleware(Middleware)
+	app.useAccessControl(DemoAccessControlGuard);
+	app.usePlanAccessControl(PosPlanAccessControlGuard);
+	app.setGlobalPrefix('/api/v1');
+	// Business-code errors thrown with `bodyOnly: true` (see RoleController.insufficientBalance)
+	// respond with this HTTP status; the real code stays in the body.
+	app.setDefaultErrorStatusCode(HttpStatusCode.OK);
+	app.useGlobalInterceptors(
+		ResponseTransformerInterceptor,
+		GlobalErrorInterceptor
+	);
+	app.useNotFoundHandler(NotFoundInterceptor);
+	socketApp.enableCors({
+		origin: "*"
+	});
+	socketApp.useGlobalMiddleware(SocketAuthMiddleware);
 
-const PORT = 3100;
+	// UserSocketController ('/waiter') uses no @AccessControl/@RequirePlan today, so
+	// socketApp doesn't need useAccessControl/usePlanAccessControl calls to boot; if a
+	// future @SocketController event adds those decorators, register the matching
+	// guard(s) on socketApp explicitly — guard state isn't shared between app and
+	// socketApp even though they're attached to the same adapter/port.
+
+	return { adapter, app, socketApp };
+}
 
 async function bootstrap() {
+	const { adapter } = buildApp();
 	// adapter.listen() automatically starts every app attached to it
 	// (app, socketApp) before binding the port — no manual .start() calls needed.
 	await adapter.listen(PORT, () => {
@@ -200,7 +212,11 @@ async function bootstrap() {
 	});
 }
 
-bootstrap().catch((err) => {
-	console.error('Failed to start server', err);
-	process.exit(1);
-});
+// Only auto-boot single-process when run directly (`ts-node example/app.ts`),
+// not when cluster.ts imports buildApp() for its own worker bootstrap.
+if (require.main === module) {
+	bootstrap().catch((err) => {
+		console.error('Failed to start server', err);
+		process.exit(1);
+	});
+}

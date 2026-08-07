@@ -187,7 +187,7 @@ class SocketApplication {
                 });
             }
             const orderNamespace = this.socketServer.of(socketRoom);
-            this.middlewares.forEach((middleware) => orderNamespace.use(middleware.use));
+            this.middlewares.forEach((middleware) => orderNamespace.use(middleware.use.bind(middleware)));
             if (!subscribers)
                 return;
             const subscribersPrototype = Object.getPrototypeOf(subscribers.instance);
