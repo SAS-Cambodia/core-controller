@@ -47,6 +47,17 @@ export declare class ServerAdapter {
      */
     attach(app: StartableApp): void;
     /**
+     * Starts every app attached to this adapter (controller/namespace
+     * registration, middleware wiring, etc.) without binding the port.
+     * Split out from listen() for setups where something other than this
+     * adapter owns port binding — e.g. a Socket.IO cluster worker under
+     * @socket.io/sticky, where the primary process binds the real port and
+     * hands off connections to workers over IPC, so a worker must finish
+     * app.start() (to populate SocketApplication.socketServer) but must NOT
+     * call httpServer.listen() itself.
+     */
+    startApps(): Promise<void>;
+    /**
      * Starts every app attached to this adapter (registration only — see
      * StartableApp), then binds the port. This is the single source of truth
      * for actually listening when an adapter is shared between apps; callers

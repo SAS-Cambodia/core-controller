@@ -162,6 +162,48 @@ HTTP and Socket.IO are two independent, single-responsibility apps — each is c
 
 **Connecting them**, via `ServerFactory.createAdapter()`: create one `ServerAdapter`, pass it to both `createServer({ adapter })` and `createSocketServer({ adapter })`, then call `adapter.listen(port, callback)` once — it automatically calls `.start()` on every app attached to it (registering routes/namespaces) before binding the port, so you don't need to call `.start()` on each app yourself. Used standalone (no `adapter`), each app's `.start(port, callback)` registers and listens in one call, exactly as before.
 
+### Cluster Mode
+
+Running the HTTP side under Node's `cluster` module (or a process manager like PM2's `-i` mode) needs no special handling — each worker just calls `adapter.listen(port, ...)` and Node's cluster module shares the listening socket across workers transparently.
+
+Socket.IO needs two extra things cluster mode alone doesn't give it:
+- **Session affinity** — a client's polling handshake (and its eventual websocket upgrade) must keep landing on the same worker that accepted the first request, or it fails with `Session ID unknown`.
+- **A shared adapter** — so `io.to(room).emit()` (or a broadcast triggered from an HTTP route) reaches sockets connected to *other* workers, not just the emitting one.
+
+[`@socket.io/sticky`](https://github.com/socketio/socket.io-sticky) solves the first, [`@socket.io/cluster-adapter`](https://github.com/socketio/socket.io-cluster-adapter) solves the second. Since a cluster worker's port is bound by `@socket.io/sticky` (the primary owns the real listening socket and hands connections to workers over IPC), a worker needs to run controller/middleware/interceptor registration *without* binding a port — that's what `ServerAdapter.startApps()` is for, split out from `adapter.listen()` for exactly this case:
+
+```typescript
+import cluster from "cluster";
+import http from "http";
+import os from "os";
+import { setupMaster, setupWorker } from "@socket.io/sticky";
+import { createAdapter, setupPrimary } from "@socket.io/cluster-adapter";
+import { buildApp, PORT } from "./app"; // your ServerFactory wiring, factored into a function
+
+if (cluster.isPrimary) {
+	const httpServer = http.createServer();
+	setupMaster(httpServer, { loadBalancingMethod: "least-connection" });
+	cluster.setupPrimary({ serialization: "advanced" }); // required by @socket.io/cluster-adapter
+	setupPrimary();
+
+	for (let i = 0; i < os.cpus().length; i++) cluster.fork();
+	cluster.on("exit", () => cluster.fork());
+
+	httpServer.listen(PORT, () => console.log(`Primary balancing http://localhost:${PORT}`));
+} else {
+	const { adapter, socketApp } = buildApp();
+
+	// Registers controllers/middleware and constructs socketApp.socketServer,
+	// but does NOT bind PORT — the primary owns the real listening socket.
+	adapter.startApps().then(() => {
+		setupWorker(socketApp.socketServer);
+		socketApp.socketServer.adapter(createAdapter());
+	});
+}
+```
+
+See `example/cluster.ts` for the full working version (run it with `npm run dev:cluster`, optionally `WORKERS=<n> npm run dev:cluster` to control the worker count — defaults to the number of CPUs).
+
 ### Middleware
 
 Middleware can be added globally:

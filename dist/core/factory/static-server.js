@@ -421,7 +421,7 @@ class CoreApplication {
     }
     executeMiddleware() {
         this.middlewares.forEach(middleware => {
-            this.server.use(middleware.use);
+            this.server.use(middleware.use.bind(middleware));
         });
     }
     /**

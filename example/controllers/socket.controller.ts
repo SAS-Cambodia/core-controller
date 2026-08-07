@@ -10,9 +10,8 @@ import {
 } from "../../src";
 import { Socket } from "socket.io";
 import { UserDto } from "./user/dto/user-dto";
-
-@SocketController('/waiter')
-export class UserSocketController implements SocketEventAdapter {
+@SocketController('/test')
+export class UserSocketController {
 	
     @SocketEvent('confirm')
     handleConfirm(
@@ -40,11 +39,11 @@ export class UserSocketController implements SocketEventAdapter {
     // Reads socket.handshake.query, e.g. connected with `?token=...`
     @SocketEvent('whoami')
     whoami(
-		@SocketQuery('token') token: string,
-		@SocketResponse() res: SocketCallBack
+			@SocketQuery('token') token: string,
+			@SocketResponse() res: SocketCallBack
     ) {
 	    res({
-		    status: 200,
+		    status: 'dddd',
 		    token,
 	    })
     }
